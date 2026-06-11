@@ -1,0 +1,21 @@
+{
+  "optimal_threshold": 0.7077707052230835,
+  "feature_cols": [
+    "velocity_ratio",
+    "balance_retention_rate",
+    "fan_out_degree",
+    "cross_bank_degree",
+    "round_amount_ratio",
+    "structuring_score",
+    "amount_variance_score",
+    "session_burst_score",
+    "dormancy_ratio",
+    "total_transactions",
+    "avg_amount",
+    "max_amount"
+  ],
+  "test_f1_default": 0.03216911764705882,
+  "test_f1_optimal": 0.07960199004975124,
+  "test_auc_roc": 0.7857370814205358,
+  "test_avg_precision": 0.04477048864564284
+}
