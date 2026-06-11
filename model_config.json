@@ -1,0 +1,31 @@
+{
+  "optimal_threshold": 0.9667333364486694,
+  "feature_cols": [
+    "velocity_ratio",
+    "balance_retention_rate",
+    "fan_out_degree",
+    "dormancy_spike_score",
+    "round_amount_flag",
+    "round_amount_ratio",
+    "type_entropy",
+    "account_age_at_activation",
+    "fan_in_degree",
+    "regularity_index",
+    "max_amount_ratio",
+    "total_transactions",
+    "avg_amount",
+    "max_amount",
+    "structuring_score",
+    "freq_acceleration",
+    "amount_variance_score",
+    "session_burst_score",
+    "dormancy_ratio",
+    "onboarding_velocity"
+  ],
+  "model_version": "xgb_final_v1",
+  "trained_on": "PaySim",
+  "test_f1_default": 0.06403369057581729,
+  "test_f1_optimal": 0.29564553093964857,
+  "test_auc_roc": 0.9148150625675162,
+  "test_avg_precision": 0.2565178665588572
+}
