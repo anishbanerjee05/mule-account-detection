@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import pickle
 import shap
+import math
 import time
 from datetime import datetime
 import warnings
@@ -20,95 +21,214 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ── Custom CSS — professional bank analyst interface ──────────────────────────
+# ── CSS ───────────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
-    /* Base */
-    .main { background-color: #F8F9FA; }
-    .block-container { padding: 1.5rem 2rem; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
-    /* Header */
-    .dashboard-header {
-        background: #1A2B4A;
-        color: white;
-        padding: 1.2rem 2rem;
-        margin: -1.5rem -2rem 1.5rem -2rem;
-        border-bottom: 3px solid #C8A951;
+    html, body, [class*="css"] {
+        font-family: 'Inter', sans-serif;
     }
-    .dashboard-header h1 {
-        font-size: 1.4rem;
+
+    .main {
+        background-color: #F0F2F5;
+    }
+
+    .block-container {
+        padding: 0 1.5rem 2rem 1.5rem;
+        max-width: 100%;
+    }
+
+    /* ── Header ── */
+    .sys-header {
+        background: #0F1923;
+        color: white;
+        padding: 0.9rem 1.8rem;
+        margin: 0 -1.5rem 1.5rem -1.5rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 2px solid #C8A032;
+    }
+    .sys-header-left h1 {
+        font-size: 1.05rem;
         font-weight: 600;
         margin: 0;
-        letter-spacing: 0.02em;
+        letter-spacing: 0.03em;
+        color: white;
     }
-    .dashboard-header p {
-        font-size: 0.8rem;
-        margin: 0.2rem 0 0 0;
-        opacity: 0.7;
+    .sys-header-left p {
+        font-size: 0.68rem;
+        margin: 0.15rem 0 0 0;
+        color: #8A9BB0;
+        letter-spacing: 0.04em;
+    }
+    .sys-header-right {
+        font-size: 0.68rem;
+        color: #8A9BB0;
+        text-align: right;
+    }
+    .status-dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #2ECC71;
+        margin-right: 5px;
+        animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+        0%   { opacity: 1; }
+        50%  { opacity: 0.4; }
+        100% { opacity: 1; }
     }
 
-    /* Metric cards */
+    /* ── Metric cards ── */
+    .metric-row {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 0.75rem;
+        margin-bottom: 1.25rem;
+    }
     .metric-card {
         background: white;
-        border: 1px solid #E2E8F0;
-        border-radius: 4px;
-        padding: 1rem 1.2rem;
+        border: 1px solid #DDE3EC;
+        border-radius: 3px;
+        padding: 0.9rem 1rem;
         text-align: center;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.06);
     }
+    .metric-card.danger  { border-top: 3px solid #C0392B; }
+    .metric-card.warning { border-top: 3px solid #B7791F; }
+    .metric-card.safe    { border-top: 3px solid #1E8449; }
+    .metric-card.info    { border-top: 3px solid #1A5276; }
+    .metric-card.neutral { border-top: 3px solid #5D6D7E; }
+
     .metric-value {
-        font-size: 2rem;
+        font-size: 1.85rem;
         font-weight: 700;
-        color: #1A2B4A;
         line-height: 1;
+        color: #0F1923;
     }
+    .metric-value.danger  { color: #C0392B; }
+    .metric-value.warning { color: #B7791F; }
+    .metric-value.safe    { color: #1E8449; }
     .metric-label {
-        font-size: 0.72rem;
-        color: #718096;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-top: 0.3rem;
-    }
-    .metric-value.red  { color: #C53030; }
-    .metric-value.amber{ color: #B7791F; }
-    .metric-value.green{ color: #276749; }
-
-    /* Alert table rows */
-    .alert-l3 { background: #FFF5F5; border-left: 4px solid #C53030; }
-    .alert-l2 { background: #FFFBEB; border-left: 4px solid #B7791F; }
-    .alert-l1 { background: #F0FFF4; border-left: 4px solid #276749; }
-
-    /* Section headers */
-    .section-title {
-        font-size: 0.75rem;
-        font-weight: 600;
+        font-size: 0.65rem;
+        font-weight: 500;
+        color: #7F8C9A;
         text-transform: uppercase;
         letter-spacing: 0.1em;
-        color: #4A5568;
-        border-bottom: 1px solid #E2E8F0;
-        padding-bottom: 0.4rem;
-        margin-bottom: 1rem;
+        margin-top: 0.35rem;
     }
 
-    /* Tier badges */
-    .badge-l3 { background:#C53030; color:white; padding:2px 8px; border-radius:3px; font-size:0.7rem; font-weight:600; }
-    .badge-l2 { background:#B7791F; color:white; padding:2px 8px; border-radius:3px; font-size:0.7rem; font-weight:600; }
-    .badge-l1 { background:#276749; color:white; padding:2px 8px; border-radius:3px; font-size:0.7rem; font-weight:600; }
-    .badge-clear { background:#718096; color:white; padding:2px 8px; border-radius:3px; font-size:0.7rem; }
+    /* ── Section labels ── */
+    .section-label {
+        font-size: 0.65rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.12em;
+        color: #5D6D7E;
+        padding-bottom: 0.4rem;
+        border-bottom: 1px solid #DDE3EC;
+        margin-bottom: 0.85rem;
+    }
 
-    /* Hide Streamlit default elements */
+    /* ── Tier badges ── */
+    .badge {
+        display: inline-block;
+        font-size: 0.62rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        padding: 2px 7px;
+        border-radius: 2px;
+        font-family: 'JetBrains Mono', monospace;
+    }
+    .badge-l3    { background: #C0392B; color: white; }
+    .badge-l2    { background: #B7791F; color: white; }
+    .badge-l1    { background: #1E8449; color: white; }
+    .badge-clear { background: #5D6D7E; color: white; }
+
+    /* ── Alert table ── */
+    .alert-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.78rem;
+    }
+    .alert-table th {
+        background: #0F1923;
+        color: #8A9BB0;
+        font-weight: 500;
+        font-size: 0.62rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        padding: 0.5rem 0.75rem;
+        text-align: left;
+        border-bottom: 2px solid #C8A032;
+    }
+    .alert-table td {
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid #EDF0F5;
+        color: #2C3E50;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+    }
+    .alert-table tr:hover td { background: #F7F9FC; }
+    .alert-table tr.row-l3 td { border-left: 3px solid #C0392B; }
+    .alert-table tr.row-l2 td { border-left: 3px solid #B7791F; }
+    .alert-table tr.row-l1 td { border-left: 3px solid #1E8449; }
+    .alert-table .confirmed-yes {
+        color: #C0392B;
+        font-weight: 600;
+    }
+
+    /* ── Sidebar ── */
+    section[data-testid="stSidebar"] {
+        background: #0F1923;
+    }
+    section[data-testid="stSidebar"] * {
+        color: #C8D6E5 !important;
+    }
+    section[data-testid="stSidebar"] h3,
+    section[data-testid="stSidebar"] strong {
+        color: white !important;
+    }
+    section[data-testid="stSidebar"] hr {
+        border-color: #1E2D3D !important;
+    }
+
+    /* ── Hide Streamlit chrome ── */
     #MainMenu { visibility: hidden; }
-    footer    { visibility: hidden; }
-    header    { visibility: hidden; }
+    footer     { visibility: hidden; }
+    header     { visibility: hidden; }
 
-    /* Sidebar */
-    .css-1d391kg { background: #1A2B4A; }
-    section[data-testid="stSidebar"] { background: #1A2B4A; }
-    section[data-testid="stSidebar"] * { color: white !important; }
+    /* ── Chart containers ── */
+    .chart-box {
+        background: white;
+        border: 1px solid #DDE3EC;
+        border-radius: 3px;
+        padding: 0.75rem;
+        margin-bottom: 0.75rem;
+    }
+
+    /* ── Account summary panel ── */
+    .acct-field {
+        display: flex;
+        justify-content: space-between;
+        padding: 0.3rem 0;
+        border-bottom: 1px solid #F0F2F5;
+        font-size: 0.78rem;
+    }
+    .acct-field-label { color: #7F8C9A; }
+    .acct-field-value {
+        font-weight: 500;
+        color: #0F1923;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.72rem;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Redis connection ───────────────────────────────────────────────────────────
+# ── Cached resources ──────────────────────────────────────────────────────────
 @st.cache_resource
 def get_redis():
     return redis.Redis(host='localhost', port=6379, decode_responses=True)
@@ -127,45 +247,20 @@ def load_models():
 r = get_redis()
 model, scaler, config, explainer = load_models()
 
-BEHAVIORAL_FEATURES = config['feature_cols_behavioral']
+BEHAVIORAL_LABELS = [
+    'Velocity Ratio', 'Balance Retention', 'Fan-Out Degree',
+    'Cross-Bank Degree', 'Round Amount Ratio', 'Structuring Score',
+    'Amount Variance', 'Session Burst', 'Dormancy Ratio',
+    'Total Transactions', 'Avg Amount', 'Max Amount'
+]
 
-# ── Header ────────────────────────────────────────────────────────────────────
-st.markdown("""
-<div class="dashboard-header">
-    <h1>Mule Account Detection System</h1>
-    <p>CyberPeace Foundation &nbsp;|&nbsp; Research Wing &nbsp;|&nbsp;
-    Hybrid XGBoost + GNN &nbsp;|&nbsp; IBM AML Dataset &nbsp;|&nbsp;
-    PMLA / RBI FREE-AI Aligned</p>
-</div>
-""", unsafe_allow_html=True)
+L3_THRESHOLD = 0.70
+L2_THRESHOLD = 0.50
+L1_THRESHOLD = 0.30
 
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### System Controls")
-    auto_refresh = st.toggle("Live refresh", value=True)
-    refresh_rate = st.slider("Refresh interval (seconds)", 2, 30, 5)
-    st.markdown("---")
-    st.markdown("### Detection Thresholds")
-    st.markdown(f"**Optimal:** {config['optimal_threshold']:.4f}")
-    st.markdown("**L3 Auto-Freeze:** 0.85+")
-    st.markdown("**L2 Soft Hold:** 0.50 - 0.85")
-    st.markdown("**L1 Review:** 0.30 - 0.50")
-    st.markdown("---")
-    st.markdown("### Model Info")
-    st.markdown(f"**Model:** Hybrid XGBoost v1")
-    st.markdown(f"**Features:** {config['n_total_features']} (12 behavioral + 64 GNN)")
-    st.markdown(f"**AUC-ROC:** {config['auc_roc']:.4f}")
-    st.markdown(f"**Avg Precision:** {config['avg_precision']:.4f}")
-    st.markdown("---")
-    st.markdown("### Regulatory")
-    st.markdown("PMLA 2002")
-    st.markdown("RBI Master Directions")
-    st.markdown("DPDP Act 2023")
-    st.markdown("RBI FREE-AI Framework 2025")
-
-# ── Fetch alerts from Redis ───────────────────────────────────────────────────
-def get_alerts(n=100):
-    raw = r.lrange('alerts', 0, n-1)
+# ── Data functions ────────────────────────────────────────────────────────────
+def get_alerts(n=200):
+    raw    = r.lrange('alerts', 0, n - 1)
     alerts = []
     for item in raw:
         try:
@@ -174,331 +269,479 @@ def get_alerts(n=100):
             pass
     return alerts
 
-def get_system_stats(alerts):
-    total    = len(alerts)
-    l3_count = sum(1 for a in alerts if '3' in a.get('tier',''))
-    l2_count = sum(1 for a in alerts if '2' in a.get('tier','') and '3' not in a.get('tier',''))
-    l1_count = sum(1 for a in alerts if '1' in a.get('tier',''))
-    confirmed_launder = sum(1 for a in alerts if a.get('is_laundering') == 1)
-    gnn_assisted = sum(1 for a in alerts if a.get('has_gnn_embed', False))
-    return total, l3_count, l2_count, l1_count, confirmed_launder, gnn_assisted
+def get_stats(alerts):
+    total     = len(alerts)
+    l3        = sum(1 for a in alerts if 'L3' in a.get('tier', ''))
+    l2        = sum(1 for a in alerts if 'L2' in a.get('tier', '') and 'L3' not in a.get('tier', ''))
+    l1        = sum(1 for a in alerts if 'L1' in a.get('tier', '') and 'L2' not in a.get('tier', '') and 'L3' not in a.get('tier', ''))
+    confirmed = sum(1 for a in alerts if a.get('account_laundering') is True or a.get('is_laundering') == 1)
+    gnn       = sum(1 for a in alerts if a.get('has_gnn_embed'))
+    gnn_pct   = int(gnn / total * 100) if total > 0 else 0
+    return total, l3, l2, l1, confirmed, gnn_pct
 
-# ── Main content ──────────────────────────────────────────────────────────────
-alerts = get_alerts(200)
-total, l3, l2, l1, confirmed, gnn_assisted = get_system_stats(alerts)
+def deduplicate_alerts(alerts):
+    seen   = {}
+    counts = {}
+    for a in alerts:
+        aid = a.get('account_id', '')
+        counts[aid] = counts.get(aid, 0) + 1
+        if aid not in seen or a.get('probability', 0) > seen[aid].get('probability', 0):
+            seen[aid] = a
+    return seen, counts
 
-# ── Metric row ────────────────────────────────────────────────────────────────
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+# ── Header ────────────────────────────────────────────────────────────────────
+now = datetime.now().strftime('%Y-%m-%d  %H:%M:%S')
+st.markdown(f"""
+<div class="sys-header">
+    <div class="sys-header-left">
+        <h1>Mule Account Detection System</h1>
+        <p>CyberPeace Foundation &nbsp;/&nbsp; Research Wing &nbsp;/&nbsp;
+        Hybrid XGBoost + GNN &nbsp;/&nbsp; IBM AML &nbsp;/&nbsp;
+        PMLA 2002 &nbsp;/&nbsp; RBI FREE-AI 2025</p>
+    </div>
+    <div class="sys-header-right">
+        <span class="status-dot"></span>Live &nbsp;&nbsp; {now}
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-with col1:
-    st.markdown(f"""<div class="metric-card">
-        <div class="metric-value">{total}</div>
-        <div class="metric-label">Total Alerts</div>
+# ── Sidebar ───────────────────────────────────────────────────────────────────
+with st.sidebar:
+    st.markdown("### Controls")
+    auto_refresh = st.toggle("Live refresh", value=True)
+    refresh_rate = st.slider("Interval (seconds)", 3, 30, 5)
+    st.markdown("---")
+    st.markdown("### Detection Thresholds")
+    st.markdown(f"Optimal score: **{config['optimal_threshold']:.4f}**")
+    st.markdown(f"L3 Auto-Freeze: **{L3_THRESHOLD}+**")
+    st.markdown(f"L2 Soft Hold: **{L2_THRESHOLD} – {L3_THRESHOLD}**")
+    st.markdown(f"L1 Review: **{L1_THRESHOLD} – {L2_THRESHOLD}**")
+    st.markdown("---")
+    st.markdown("### Model")
+    st.markdown(f"Hybrid XGBoost v1")
+    st.markdown(f"Features: **{config['n_total_features']}**")
+    st.markdown(f"Behavioral: **12**")
+    st.markdown(f"GNN embeddings: **64**")
+    st.markdown(f"AUC-ROC: **{config['auc_roc']:.4f}**")
+    st.markdown(f"Avg Precision: **{config['avg_precision']:.4f}**")
+    st.markdown("---")
+    st.markdown("### Regulatory Alignment")
+    for reg in ["PMLA 2002", "RBI Master Directions",
+                "RBI Directive Jul 2024", "DPDP Act 2023",
+                "RBI FREE-AI Aug 2025"]:
+        st.markdown(f"- {reg}")
+
+# ── Fetch data ────────────────────────────────────────────────────────────────
+alerts                = get_alerts(200)
+total, l3, l2, l1, confirmed, gnn_pct = get_stats(alerts)
+deduped, counts       = deduplicate_alerts(alerts)
+
+# ── Metric cards ──────────────────────────────────────────────────────────────
+c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+def metric_card(col, value, label, style="neutral"):
+    col.markdown(f"""
+    <div class="metric-card {style}">
+        <div class="metric-value {style if style in ('danger','warning','safe') else ''}">{value}</div>
+        <div class="metric-label">{label}</div>
     </div>""", unsafe_allow_html=True)
 
-with col2:
-    st.markdown(f"""<div class="metric-card">
-        <div class="metric-value red">{l3}</div>
-        <div class="metric-label">L3 Auto-Freeze</div>
-    </div>""", unsafe_allow_html=True)
-
-with col3:
-    st.markdown(f"""<div class="metric-card">
-        <div class="metric-value amber">{l2}</div>
-        <div class="metric-label">L2 Soft Hold</div>
-    </div>""", unsafe_allow_html=True)
-
-with col4:
-    st.markdown(f"""<div class="metric-card">
-        <div class="metric-value green">{l1}</div>
-        <div class="metric-label">L1 Review</div>
-    </div>""", unsafe_allow_html=True)
-
-with col5:
-    st.markdown(f"""<div class="metric-card">
-        <div class="metric-value red">{confirmed}</div>
-        <div class="metric-label">Confirmed Laundering</div>
-    </div>""", unsafe_allow_html=True)
-
-with col6:
-    pct = int(gnn_assisted/total*100) if total > 0 else 0
-    st.markdown(f"""<div class="metric-card">
-        <div class="metric-value">{pct}%</div>
-        <div class="metric-label">GNN-Assisted</div>
-    </div>""", unsafe_allow_html=True)
+metric_card(c1, total,     "Total Alerts",          "info")
+metric_card(c2, l3,        "L3 Auto-Freeze",         "danger")
+metric_card(c3, l2,        "L2 Soft Hold",           "warning")
+metric_card(c4, l1,        "L1 Review",              "safe")
+metric_card(c5, confirmed, "Confirmed Laundering",   "danger")
+metric_card(c6, f"{gnn_pct}%", "GNN-Assisted",       "neutral")
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ── Two-column layout ─────────────────────────────────────────────────────────
-left_col, right_col = st.columns([3, 2])
+# ── Main layout ───────────────────────────────────────────────────────────────
+left, right = st.columns([3, 2])
 
-# ── LEFT: Alert queue ─────────────────────────────────────────────────────────
-with left_col:
-    st.markdown('<div class="section-title">Alert Queue — Most Recent First</div>', unsafe_allow_html=True)
+# ── LEFT: Alert table ─────────────────────────────────────────────────────────
+with left:
+    st.markdown('<div class="section-label">Alert Queue — Unique Accounts, Ranked by Score</div>',
+                unsafe_allow_html=True)
 
-    if not alerts:
-        st.info("No alerts yet. Start the producer and consumer to begin detection.")
+    if not deduped:
+        st.markdown("""
+        <div style="background:white;border:1px solid #DDE3EC;border-radius:3px;
+        padding:2rem;text-align:center;color:#7F8C9A;font-size:0.85rem;">
+            No alerts detected. Start the producer and consumer to begin real-time detection.
+        </div>""", unsafe_allow_html=True)
     else:
-        # Build display dataframe
-        rows = []
-        for a in alerts[:50]:
-            tier = a.get('tier', 'CLEAR')
-            if 'L3' in tier or '3' in tier:
-                badge = '<span class="badge-l3">L3</span>'
-            elif 'L2' in tier or '2' in tier:
-                badge = '<span class="badge-l2">L2</span>'
-            elif 'L1' in tier or '1' in tier:
-                badge = '<span class="badge-l1">L1</span>'
-            else:
-                badge = '<span class="badge-clear">CLR</span>'
-
-            ts = a.get('timestamp','')[:19].replace('T',' ')
-            rows.append({
-                'Time':        ts,
-                'Account':     a.get('account_id','')[:16],
-                'Amount':      f"Rs. {a.get('amount',0):>14,.2f}",
-                'Score':       f"{a.get('probability',0):.4f}",
-                'Tier':        badge,
-                'Txn Count':   a.get('total_txn', '-'),
-                'Fan-Out':     a.get('fan_out', '-'),
-                'Cross-Bank':  a.get('cross_bank', '-'),
-                'GNN':         'Yes' if a.get('has_gnn_embed') else 'No',
-                'Confirmed':   'YES' if a.get('is_laundering') == 1 else '-'
-            })
-
-        df_display = pd.DataFrame(rows)
-        st.write(
-            df_display.to_html(escape=False, index=False),
-            unsafe_allow_html=True
+        sorted_accounts = sorted(
+            deduped.items(),
+            key=lambda x: x[1].get('probability', 0),
+            reverse=True
         )
 
-# ── RIGHT: Charts and SHAP ────────────────────────────────────────────────────
-with right_col:
+        rows_html = ""
+        for aid, a in sorted_accounts[:40]:
+            tier  = a.get('tier', 'CLEAR')
+            prob  = a.get('probability', 0)
+            ts    = a.get('timestamp', '')[:16].replace('T', ' ')
+            cnt   = counts.get(aid, 1)
+            fan   = a.get('fan_out', '-')
+            xbank = a.get('cross_bank', '-')
+            txn   = a.get('total_txn', '-')
+            gnn   = 'Yes' if a.get('has_gnn_embed') else 'No'
+            conf  = a.get('account_laundering', False) or a.get('is_laundering', 0) == 1
 
-    # Score distribution chart
-    st.markdown('<div class="section-title">Score Distribution</div>', unsafe_allow_html=True)
+            if 'L3' in tier:
+                badge   = '<span class="badge badge-l3">L3</span>'
+                row_cls = 'row-l3'
+            elif 'L2' in tier:
+                badge   = '<span class="badge badge-l2">L2</span>'
+                row_cls = 'row-l2'
+            elif 'L1' in tier:
+                badge   = '<span class="badge badge-l1">L1</span>'
+                row_cls = 'row-l1'
+            else:
+                badge   = '<span class="badge badge-clear">CLR</span>'
+                row_cls = ''
+
+            confirmed_cell = (
+                '<td class="confirmed-yes">YES</td>'
+                if conf else '<td>-</td>'
+            )
+
+            rows_html += f"""
+            <tr class="{row_cls}">
+                <td>{ts}</td>
+                <td>{aid[:14]}</td>
+                <td style="text-align:right">{a.get('amount',0):,.0f}</td>
+                <td style="text-align:right"><strong>{prob:.4f}</strong></td>
+                <td>{badge}</td>
+                <td style="text-align:right">{cnt}</td>
+                <td style="text-align:right">{txn}</td>
+                <td style="text-align:right">{fan}</td>
+                <td style="text-align:right">{xbank}</td>
+                <td style="text-align:center">{gnn}</td>
+                {confirmed_cell}
+            </tr>"""
+
+        st.markdown(f"""
+        <table class="alert-table">
+            <thead>
+                <tr>
+                    <th>Time</th>
+                    <th>Account</th>
+                    <th style="text-align:right">Amount (Rs.)</th>
+                    <th style="text-align:right">Score</th>
+                    <th>Tier</th>
+                    <th style="text-align:right">Alerts</th>
+                    <th style="text-align:right">Txn</th>
+                    <th style="text-align:right">Fan-Out</th>
+                    <th style="text-align:right">X-Bank</th>
+                    <th style="text-align:center">GNN</th>
+                    <th>Confirmed</th>
+                </tr>
+            </thead>
+            <tbody>{rows_html}</tbody>
+        </table>
+        """, unsafe_allow_html=True)
+
+# ── RIGHT: Charts ─────────────────────────────────────────────────────────────
+with right:
+
+    # Score distribution
+    st.markdown('<div class="section-label">Score Distribution</div>',
+                unsafe_allow_html=True)
     if alerts:
         probs = [a.get('probability', 0) for a in alerts]
-        fig, ax = plt.subplots(figsize=(5, 2.5))
-        ax.hist(probs, bins=20, color='#1A2B4A', edgecolor='white', linewidth=0.5)
-        ax.axvline(x=0.30, color='#276749', linestyle='--', linewidth=1, label='L1 (0.30)')
-        ax.axvline(x=0.50, color='#B7791F', linestyle='--', linewidth=1, label='L2 (0.50)')
-        ax.axvline(x=0.85, color='#C53030', linestyle='--', linewidth=1, label='L3 (0.85)')
-        ax.set_xlabel('Fraud Probability', fontsize=8)
-        ax.set_ylabel('Count', fontsize=8)
-        ax.tick_params(labelsize=7)
-        ax.legend(fontsize=7)
-        ax.set_facecolor('#F8F9FA')
-        fig.patch.set_facecolor('#F8F9FA')
-        plt.tight_layout()
+        fig, ax = plt.subplots(figsize=(5, 2.2))
+        ax.hist(probs, bins=25, color='#1A5276', edgecolor='#F0F2F5', linewidth=0.4)
+        ax.axvline(x=L1_THRESHOLD, color='#1E8449', linestyle='--', linewidth=0.9,
+                   label=f'L1 ({L1_THRESHOLD})')
+        ax.axvline(x=L2_THRESHOLD, color='#B7791F', linestyle='--', linewidth=0.9,
+                   label=f'L2 ({L2_THRESHOLD})')
+        ax.axvline(x=L3_THRESHOLD, color='#C0392B', linestyle='--', linewidth=0.9,
+                   label=f'L3 ({L3_THRESHOLD})')
+        ax.set_xlabel('Fraud Probability', fontsize=7, color='#5D6D7E')
+        ax.set_ylabel('Count', fontsize=7, color='#5D6D7E')
+        ax.tick_params(labelsize=6, colors='#5D6D7E')
+        ax.legend(fontsize=6, framealpha=0.9)
+        ax.set_facecolor('#F8FAFC')
+        fig.patch.set_facecolor('white')
+        for spine in ax.spines.values():
+            spine.set_color('#DDE3EC')
+        plt.tight_layout(pad=0.5)
         st.pyplot(fig)
         plt.close()
     else:
-        st.write("No data yet.")
+        st.markdown('<div style="color:#7F8C9A;font-size:0.78rem;padding:1rem 0">No data yet.</div>',
+                    unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Tier breakdown pie chart
-    st.markdown('<div class="section-title">Alert Tier Breakdown</div>', unsafe_allow_html=True)
-    if total > 0:
-        fig2, ax2 = plt.subplots(figsize=(4, 2.5))
-        sizes  = [l3, l2, l1]
-        labels = ['L3 Auto-Freeze', 'L2 Soft Hold', 'L1 Review']
-        colors = ['#C53030', '#B7791F', '#276749']
-        non_zero = [(s,l,c) for s,l,c in zip(sizes,labels,colors) if s > 0]
-        if non_zero:
-            s,l,c = zip(*non_zero)
-            ax2.pie(s, labels=l, colors=c, autopct='%1.0f%%',
-                    textprops={'fontsize':7}, startangle=90)
-        ax2.set_facecolor('#F8F9FA')
-        fig2.patch.set_facecolor('#F8F9FA')
-        plt.tight_layout()
+    # Tier breakdown
+    st.markdown('<div class="section-label">Alert Tier Breakdown</div>',
+                unsafe_allow_html=True)
+    if total > 0 and (l3 + l2 + l1) > 0:
+        fig2, ax2 = plt.subplots(figsize=(4, 2.2))
+        data   = [(l3,'L3 Auto-Freeze','#C0392B'),
+                  (l2,'L2 Soft Hold',  '#B7791F'),
+                  (l1,'L1 Review',     '#1E8449')]
+        data   = [(s, l, c) for s, l, c in data if s > 0]
+        sizes, labels, colors = zip(*data)
+        wedges, texts, autotexts = ax2.pie(
+            sizes, labels=labels, colors=colors,
+            autopct='%1.0f%%',
+            textprops={'fontsize': 6.5},
+            startangle=90,
+            wedgeprops={'linewidth': 0.5, 'edgecolor': 'white'}
+        )
+        for at in autotexts:
+            at.set_fontsize(6)
+        fig2.patch.set_facecolor('white')
+        plt.tight_layout(pad=0.3)
         st.pyplot(fig2)
         plt.close()
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Top flagged accounts
-    st.markdown('<div class="section-title">Most Flagged Accounts</div>', unsafe_allow_html=True)
-    if alerts:
-        account_counts = {}
-        account_scores = {}
-        for a in alerts:
-            aid = a.get('account_id','')
-            account_counts[aid] = account_counts.get(aid, 0) + 1
-            account_scores[aid] = max(account_scores.get(aid, 0), a.get('probability', 0))
-
-        top_accounts = sorted(account_counts.items(), key=lambda x: x[1], reverse=True)[:5]
-        for acc, count in top_accounts:
-            score = account_scores[acc]
+    # Top accounts
+    st.markdown('<div class="section-label">Highest Risk Accounts</div>',
+                unsafe_allow_html=True)
+    if deduped:
+        top5 = sorted(deduped.items(),
+                      key=lambda x: x[1].get('probability', 0),
+                      reverse=True)[:5]
+        for aid, a in top5:
+            prob  = a.get('probability', 0)
+            cnt   = counts.get(aid, 1)
+            tier  = a.get('tier', '')
+            color = '#C0392B' if 'L3' in tier else '#B7791F' if 'L2' in tier else '#1E8449'
             st.markdown(
-                f"**{acc[:16]}** &nbsp; {count} alerts &nbsp; "
-                f"max score: `{score:.4f}`"
+                f"<div style='display:flex;justify-content:space-between;"
+                f"padding:0.3rem 0;border-bottom:1px solid #F0F2F5;"
+                f"font-size:0.75rem'>"
+                f"<span style='font-family:JetBrains Mono,monospace;color:#0F1923'>{aid[:14]}</span>"
+                f"<span style='color:{color};font-weight:600'>{prob:.4f}</span>"
+                f"<span style='color:#7F8C9A'>{cnt} alerts</span>"
+                f"</div>",
+                unsafe_allow_html=True
             )
 
-# ── SHAP Explanation section ──────────────────────────────────────────────────
-st.markdown("---")
-st.markdown('<div class="section-title">SHAP Decision Explanation — Select Account to Investigate</div>',
+# ── SHAP Explanation ──────────────────────────────────────────────────────────
+st.markdown("<br>", unsafe_allow_html=True)
+st.markdown('<div class="section-label">Decision Explanation — SHAP Feature Attribution</div>',
             unsafe_allow_html=True)
 
-if alerts:
-    account_ids = list(dict.fromkeys([a['account_id'] for a in alerts]))
-    selected    = st.selectbox("Account ID", account_ids, label_visibility="collapsed")
+if deduped:
+    account_list = [aid for aid, _ in sorted(
+        deduped.items(),
+        key=lambda x: x[1].get('probability', 0),
+        reverse=True
+    )]
+    selected = st.selectbox("Select account to investigate",
+                            account_list, label_visibility="collapsed")
 
-    selected_alerts = [a for a in alerts if a['account_id'] == selected]
-    if selected_alerts:
-        best_alert = max(selected_alerts, key=lambda x: x.get('probability', 0))
+    if selected:
+        best_alert = deduped[selected]
+        alert_count = counts.get(selected, 1)
 
-        exp_col1, exp_col2 = st.columns([1, 2])
+        exp_left, exp_right = st.columns([1, 2])
 
-        with exp_col1:
-            st.markdown("**Account Summary**")
-            st.markdown(f"Account ID: `{selected}`")
-            st.markdown(f"Alert count: {len(selected_alerts)}")
-            st.markdown(f"Max probability: `{best_alert.get('probability',0):.4f}`")
-            st.markdown(f"Risk tier: **{best_alert.get('tier','—')}**")
-            st.markdown(f"Total transactions: {best_alert.get('total_txn','—')}")
-            st.markdown(f"Fan-out degree: {best_alert.get('fan_out','—')}")
-            st.markdown(f"Cross-bank degree: {best_alert.get('cross_bank','—')}")
-            st.markdown(f"GNN embedding: {'Present' if best_alert.get('has_gnn_embed') else 'Not found'}")
-            st.markdown(f"Confirmed laundering: {'YES' if best_alert.get('is_laundering')==1 else 'No'}")
+        with exp_left:
+            st.markdown('<div class="section-label">Account Summary</div>',
+                        unsafe_allow_html=True)
 
-            # STR button
+            fields = [
+                ("Account ID",       selected),
+                ("Total alerts",     str(alert_count)),
+                ("Max score",        f"{best_alert.get('probability',0):.4f}"),
+                ("Risk tier",        best_alert.get('tier','—')),
+                ("Transactions",     str(best_alert.get('total_txn','—'))),
+                ("Fan-out degree",   str(best_alert.get('fan_out','—'))),
+                ("Cross-bank",       str(best_alert.get('cross_bank','—'))),
+                ("Max amount",       f"Rs. {best_alert.get('max_amount',0):,.0f}"),
+                ("GNN embedding",    "Present" if best_alert.get('has_gnn_embed') else "Not found"),
+                ("Confirmed launder",
+                 "YES" if (best_alert.get('account_laundering') or
+                           best_alert.get('is_laundering')==1) else "No"),
+            ]
+
+            html_fields = ""
+            for label, value in fields:
+                color = "#C0392B" if label == "Confirmed launder" and value == "YES" else "#0F1923"
+                html_fields += (
+                    f"<div class='acct-field'>"
+                    f"<span class='acct-field-label'>{label}</span>"
+                    f"<span class='acct-field-value' style='color:{color}'>{value}</span>"
+                    f"</div>"
+                )
+            st.markdown(html_fields, unsafe_allow_html=True)
+
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            # STR generation
             if st.button("Generate STR Report", type="primary"):
-                str_content = f"""SUSPICIOUS TRANSACTION REPORT
-FIU-IND FORMAT — PMLA 2002
+                tier      = best_alert.get('tier','—')
+                prob      = best_alert.get('probability',0)
+                rec_action = (
+                    "IMMEDIATE ACCOUNT FREEZE AND STR FILING WITH FIU-IND"
+                    if prob >= L3_THRESHOLD
+                    else "Analyst review and enhanced due diligence required"
+                )
+                str_text = f"""SUSPICIOUS TRANSACTION REPORT
+FIU-IND FORMAT — PMLA 2002 SECTION 12
 
-Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-Report Type: Automated Detection — Mule Account
+Generated:      {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+Report Type:    Automated Detection — Mule Account Behavioral Analysis
 
-ACCOUNT DETAILS
-Account ID:        {selected}
-Risk Tier:         {best_alert.get('tier','—')}
-Fraud Probability: {best_alert.get('probability',0):.4f}
-Total Alerts:      {len(selected_alerts)}
+SUBJECT ACCOUNT
+Account ID:           {selected}
+Risk Tier:            {tier}
+Fraud Probability:    {prob:.4f}
+Total System Alerts:  {alert_count}
 
 BEHAVIORAL INDICATORS
-Total Transactions: {best_alert.get('total_txn','—')}
-Fan-Out Degree:     {best_alert.get('fan_out','—')} unique destinations
-Cross-Bank Degree:  {best_alert.get('cross_bank','—')} unique banks
-Max Amount:         Rs. {best_alert.get('amount',0):,.2f}
-GNN Graph Context:  {'Present — account found in transaction graph' if best_alert.get('has_gnn_embed') else 'Not in graph'}
+Total Transactions:    {best_alert.get('total_txn','—')}
+Fan-Out Degree:        {best_alert.get('fan_out','—')} unique destination banks
+Cross-Bank Degree:     {best_alert.get('cross_bank','—')} unique receiving banks
+Peak Transaction:      Rs. {best_alert.get('max_amount',0):,.2f}
+Detection Amount:      Rs. {best_alert.get('amount',0):,.2f}
+Payment Format:        {best_alert.get('payment_format','—')}
+GNN Graph Context:     {'Present — account found in IBM AML transaction graph' if best_alert.get('has_gnn_embed') else 'Not in graph — new account'}
+Confirmed Laundering:  {'YES — account appears in confirmed IBM AML laundering records' if (best_alert.get('account_laundering') or best_alert.get('is_laundering')==1) else 'Not confirmed in current dataset'}
 
-DETECTION METHOD
-Phase 1: Rule Engine — PMLA-aligned thresholds
-Phase 2: XGBoost — 12 behavioral features
-Phase 4: GNN EdgeProp — 64-dimensional graph embedding
-Hybrid Score: {best_alert.get('probability',0):.4f} (threshold: {config['optimal_threshold']:.4f})
+DETECTION METHODOLOGY
+Phase 1:   Rule Engine — PMLA-aligned threshold rules (R1-R5)
+Phase 2:   XGBoost Classifier — 12 behavioral feature vectors
+Phase 4:   MuleGNN (GCN + EdgeProp) — 64-dimensional graph embeddings
+Hybrid:    76-feature XGBoost trained on behavioral + GNN features
+Score:     {prob:.4f} / threshold: {config['optimal_threshold']:.4f}
+AUC-ROC:   {config['auc_roc']:.4f}
 
 REGULATORY BASIS
 Prevention of Money Laundering Act 2002
-RBI Master Direction on KYC
-RBI Governor Directive July 2024
-RBI FREE-AI Framework August 2025
+RBI Master Direction on KYC (Updated 2024)
+RBI Governor Directive on Mule Accounts — July 2024
+Digital Personal Data Protection Act 2023
+RBI Framework for Responsible and Ethical Enablement of AI (FREE-AI) — August 2025
 
 RECOMMENDED ACTION
-{'Immediate account freeze and STR filing with FIU-IND' if best_alert.get('probability',0) >= 0.85 else 'Analyst review and enhanced due diligence'}
+{rec_action}
+
+---
+Generated by: Mule Account Detection System v1.0
+Organisation: CyberPeace Foundation Research Wing
+Intern:        Anish Banerjee — B.Tech CSE, DBS Global University
 """
                 st.download_button(
-                    label="Download STR",
-                    data=str_content,
+                    label="Download STR (.txt)",
+                    data=str_text,
                     file_name=f"STR_{selected}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                     mime="text/plain"
                 )
 
-        with exp_col2:
-            st.markdown("**SHAP Feature Attribution**")
-            st.caption("Shows which features drove the fraud score for this account")
+        with exp_right:
+            st.markdown('<div class="section-label">SHAP Feature Attribution (Behavioral Features)</div>',
+                        unsafe_allow_html=True)
+            st.caption("Red bars increase fraud risk. Green bars decrease it.")
 
-            # Build feature vector for SHAP
             acct_state = r.hgetall(f"acct:{selected}")
             if acct_state:
-                total_txn    = int(acct_state.get('total_txn', 1))
-                sum_amount   = float(acct_state.get('sum_amount', 0))
-                max_amount   = float(acct_state.get('max_amount', 0))
-                sum_sq       = float(acct_state.get('sum_sq_amount', 0))
-                unique_dest  = set(acct_state.get('unique_dest','').split(','))
-                unique_banks = set(acct_state.get('unique_banks','').split(','))
-                unique_dest.discard('')
-                unique_banks.discard('')
-                round_count  = int(acct_state.get('round_count', 0))
-                avg_amount   = sum_amount / total_txn if total_txn > 0 else 0
+                total_txn  = int(acct_state.get('total_txn', 1))
+                sum_amount = float(acct_state.get('sum_amount', 0))
+                max_amount = float(acct_state.get('max_amount', 0))
+                sum_sq     = float(acct_state.get('sum_sq_amount', 0))
+                ud         = set(acct_state.get('unique_dest','').split(','))
+                ub         = set(acct_state.get('unique_banks','').split(','))
+                ud.discard('')
+                ub.discard('')
+                round_cnt  = int(acct_state.get('round_count', 0))
+                avg_amount = sum_amount / total_txn if total_txn > 0 else 0
+                amt        = best_alert.get('amount', avg_amount)
 
-                import math
-                velocity_ratio    = min(best_alert.get('amount',0) / (max_amount + 1e-9), 1.0)
-                balance_retention = max(0.0, 1.0 - velocity_ratio)
-                round_ratio       = round_count / total_txn if total_txn > 0 else 0.0
-
+                vel   = min(amt / (max_amount + 1e-9), 1.0) if total_txn > 1 else 0.95
+                bret  = max(0.0, 1.0 - vel)
+                rrat  = round_cnt / total_txn if total_txn > 0 else 0.0
                 if total_txn > 1:
-                    mean_sq = sum_sq / total_txn
-                    var     = mean_sq - avg_amount**2
-                    std     = math.sqrt(max(var, 0))
-                    cv      = std / (avg_amount + 1e-9)
-                    amt_var = 1.0 / (1.0 + cv)
+                    msq  = sum_sq / total_txn
+                    var  = msq - avg_amount**2
+                    std  = math.sqrt(max(var, 0))
+                    avar = 1.0 / (1.0 + std / (avg_amount + 1e-9))
                 else:
-                    amt_var = 1.0
+                    avar = 1.0
 
                 behavioral = [
-                    velocity_ratio,
-                    balance_retention,
-                    float(len(unique_dest)),
-                    float(len(unique_banks)),
-                    round_ratio,
-                    round_ratio * 0.5,
-                    amt_var,
-                    min(best_alert.get('amount',0) / (avg_amount * 5 + 1e-9), 1.0),
-                    max(0.0, 1.0 - min(total_txn/10.0, 1.0)),
-                    float(total_txn),
-                    avg_amount,
-                    max_amount,
+                    vel, bret,
+                    float(len(ud)), float(len(ub)),
+                    rrat, rrat * 0.5, avar,
+                    min(amt / (avg_amount * 5 + 1e-9), 1.0),
+                    max(0.0, 1.0 - min(total_txn / 10.0, 1.0)),
+                    float(total_txn), avg_amount, max_amount,
                 ]
 
                 emb_json = r.get(f"embed:{selected}")
-                gnn_emb  = json.loads(emb_json) if emb_json else [0.0]*64
+                gnn_emb  = json.loads(emb_json) if emb_json else [0.0] * 64
                 features = behavioral + gnn_emb
 
-                X        = np.array(features).reshape(1,-1)
-                X_scaled = scaler.transform(X)
-                shap_vals = explainer.shap_values(X_scaled)[0]
+                X         = np.array(features).reshape(1, -1)
+                X_scaled  = scaler.transform(X)
+                shap_vals = explainer.shap_values(X_scaled)[0][:12]
 
-                # Show top behavioral features only (first 12)
-                behavioral_labels = [
-                    'Velocity Ratio','Balance Retention','Fan-Out Degree',
-                    'Cross-Bank Degree','Round Amount Ratio','Structuring Score',
-                    'Amount Variance','Session Burst','Dormancy Ratio',
-                    'Total Transactions','Avg Amount','Max Amount'
-                ]
-                shap_behavioral = shap_vals[:12]
-                sorted_idx = np.argsort(np.abs(shap_behavioral))[::-1][:8]
+                sorted_idx = np.argsort(np.abs(shap_vals))[::-1][:8]
+                vals       = shap_vals[sorted_idx]
+                lbls       = [BEHAVIORAL_LABELS[i] for i in sorted_idx]
+                bar_colors = ['#C0392B' if v > 0 else '#1E8449' for v in vals]
 
-                fig3, ax3 = plt.subplots(figsize=(6, 3.5))
-                colors_bar = ['#C53030' if v > 0 else '#276749' for v in shap_behavioral[sorted_idx]]
-                bars = ax3.barh(
-                    [behavioral_labels[i] for i in sorted_idx],
-                    shap_behavioral[sorted_idx],
-                    color=colors_bar, edgecolor='white', linewidth=0.5
-                )
-                ax3.axvline(x=0, color='#4A5568', linewidth=0.8)
-                ax3.set_xlabel('SHAP Value (positive = increases fraud risk)', fontsize=7)
-                ax3.tick_params(labelsize=7)
-                ax3.set_facecolor('#F8F9FA')
-                fig3.patch.set_facecolor('#F8F9FA')
-                red_patch   = mpatches.Patch(color='#C53030', label='Increases fraud risk')
-                green_patch = mpatches.Patch(color='#276749', label='Decreases fraud risk')
-                ax3.legend(handles=[red_patch, green_patch], fontsize=7, loc='lower right')
-                plt.tight_layout()
+                fig3, ax3 = plt.subplots(figsize=(6, 3.2))
+                bars = ax3.barh(lbls, vals, color=bar_colors,
+                                edgecolor='white', linewidth=0.4, height=0.6)
+                ax3.axvline(x=0, color='#5D6D7E', linewidth=0.7)
+                ax3.set_xlabel('SHAP value', fontsize=7, color='#5D6D7E')
+                ax3.tick_params(labelsize=6.5, colors='#2C3E50')
+                ax3.set_facecolor('#F8FAFC')
+                fig3.patch.set_facecolor('white')
+                for spine in ax3.spines.values():
+                    spine.set_color('#DDE3EC')
+                red_p   = mpatches.Patch(color='#C0392B', label='Increases fraud risk')
+                green_p = mpatches.Patch(color='#1E8449', label='Decreases fraud risk')
+                ax3.legend(handles=[red_p, green_p], fontsize=6.5,
+                           framealpha=0.95, loc='lower right')
+                plt.tight_layout(pad=0.5)
                 st.pyplot(fig3)
                 plt.close()
+
+                # GNN contribution summary
+                gnn_shap_sum = float(np.sum(np.abs(explainer.shap_values(X_scaled)[0][12:])))
+                beh_shap_sum = float(np.sum(np.abs(shap_vals)))
+                total_shap   = gnn_shap_sum + beh_shap_sum
+                if total_shap > 0:
+                    gnn_pct_contrib = gnn_shap_sum / total_shap * 100
+                    beh_pct_contrib = beh_shap_sum / total_shap * 100
+                    st.markdown(
+                        f"<div style='font-size:0.72rem;color:#5D6D7E;margin-top:0.5rem'>"
+                        f"Feature contribution — Behavioral: <strong>{beh_pct_contrib:.0f}%</strong> &nbsp;|&nbsp; "
+                        f"GNN graph embeddings: <strong>{gnn_pct_contrib:.0f}%</strong>"
+                        f"</div>",
+                        unsafe_allow_html=True
+                    )
             else:
-                st.info("Account state not found in Redis. Process more transactions first.")
+                st.markdown(
+                    "<div style='color:#7F8C9A;font-size:0.78rem;padding:1rem 0'>"
+                    "Account state not found in Redis. "
+                    "Process more transactions to build account history."
+                    "</div>",
+                    unsafe_allow_html=True
+                )
+
+# ── Footer ────────────────────────────────────────────────────────────────────
+st.markdown(
+    f"<div style='text-align:right;font-size:0.65rem;color:#A0AEC0;"
+    f"margin-top:2rem;padding-top:0.5rem;border-top:1px solid #DDE3EC'>"
+    f"Last updated: {datetime.now().strftime('%H:%M:%S')} &nbsp;|&nbsp; "
+    f"Refreshing every {refresh_rate if auto_refresh else '—'}s &nbsp;|&nbsp; "
+    f"Mule Account Detection System v1.0 &nbsp;|&nbsp; "
+    f"CyberPeace Foundation Research Wing</div>",
+    unsafe_allow_html=True
+)
 
 # ── Auto refresh ──────────────────────────────────────────────────────────────
 if auto_refresh:
-    st.markdown(
-        f"<div style='text-align:right;font-size:0.7rem;color:#718096;"
-        f"margin-top:1rem'>Last updated: {datetime.now().strftime('%H:%M:%S')} "
-        f"— refreshing every {refresh_rate}s</div>",
-        unsafe_allow_html=True
-    )
     time.sleep(refresh_rate)
     st.rerun()
