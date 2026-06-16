@@ -1,0 +1,24 @@
+{
+  "optimal_threshold": 0.30702656507492065,
+  "feature_cols_behavioral": [
+    "velocity_ratio",
+    "balance_retention_rate",
+    "fan_out_degree",
+    "cross_bank_degree",
+    "round_amount_ratio",
+    "structuring_score",
+    "amount_variance_score",
+    "session_burst_score",
+    "dormancy_ratio",
+    "total_transactions",
+    "avg_amount",
+    "max_amount"
+  ],
+  "n_behavioral_features": 12,
+  "n_gnn_embedding_dims": 64,
+  "n_total_features": 76,
+  "model_version": "xgb_hybrid_v1",
+  "auc_roc": 0.8516461164184064,
+  "avg_precision": 0.078375338522523,
+  "f1_optimal": 0.1436464083893654
+}
