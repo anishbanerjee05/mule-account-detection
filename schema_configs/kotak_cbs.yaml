@@ -1,0 +1,52 @@
+# Kotak Mahindra Bank CBS — Schema Configuration
+# CyberPeace Foundation Mule Detection System
+# Last updated: June 2026
+
+bank_name: "Kotak Mahindra Bank"
+bank_code: "KOTAK"
+cbs_system: "Proprietary CBS"
+
+field_mappings:
+  account_from:    "FROM_ACCOUNT_ID"
+  account_to:      "TO_ACCOUNT_ID"
+  bank_from:       "SOURCE_IFSC"
+  bank_to:         "DEST_IFSC"
+  amount_paid:     "TRANSACTION_AMT"
+  currency:        "CURRENCY_CODE"
+  payment_format:  "PAYMENT_MODE"
+  timestamp:       "CREATED_AT"
+  transaction_id:  "TXN_REF_ID"
+  is_laundering:   "FRAUD_FLAG"
+
+transformers:
+  amount_paid:    "float"
+  is_laundering:  "int"
+  account_from:   "str"
+  account_to:     "str"
+  timestamp:      "timestamp_iso"
+
+defaults:
+  is_laundering:  0
+  currency:       "INR"
+
+# Payment format mapping — Kotak uses different codes
+payment_format_map:
+  "NEFT":   "ACH"
+  "RTGS":   "Wire"
+  "IMPS":   "ACH"
+  "UPI":    "ACH"
+  "DEBIT":  "Cash"
+  "CHEQUE": "Cheque"
+  "FT":     "Wire"
+
+# Alert thresholds aligned with PMLA
+pmla_thresholds:
+  cash_reporting:     500000
+  non_cash_reporting: 1000000
+  wire_transfer:      5000000
+
+# Kotak-specific risk flags
+risk_flags:
+  dormant_activation_days: 90
+  velocity_threshold:       0.85
+  fan_out_threshold:        8

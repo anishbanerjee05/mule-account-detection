@@ -1,0 +1,51 @@
+# SBI Finacle Core Banking System — Schema Configuration
+# CyberPeace Foundation Mule Detection System
+# Last updated: June 2026
+
+bank_name: "State Bank of India"
+bank_code: "SBI"
+cbs_system: "Infosys Finacle"
+
+field_mappings:
+  account_from:    "DEBIT_ACCT_NO"
+  account_to:      "CREDIT_ACCT_NO"
+  bank_from:       "BRANCH_CODE"
+  bank_to:         "DEST_BANK_CODE"
+  amount_paid:     "TXN_AMOUNT"
+  currency:        "TXN_CCY"
+  payment_format:  "TXN_TYPE"
+  timestamp:       "TXN_DATE"
+  transaction_id:  "UTR_NO"
+  is_laundering:   "IS_FRAUD"
+
+transformers:
+  amount_paid:    "float"
+  is_laundering:  "int"
+  account_from:   "str"
+  account_to:     "str"
+  timestamp:      "timestamp_iso"
+
+defaults:
+  is_laundering:  0
+  currency:       "INR"
+
+# Payment format mapping — SBI uses different codes
+payment_format_map:
+  "NEFT":  "ACH"
+  "RTGS":  "Wire"
+  "IMPS":  "ACH"
+  "UPI":   "ACH"
+  "CASH":  "Cash"
+  "CHQ":   "Cheque"
+
+# Alert thresholds aligned with PMLA reporting obligations
+pmla_thresholds:
+  cash_reporting:     500000    # Rs. 5 lakh
+  non_cash_reporting: 1000000   # Rs. 10 lakh
+  wire_transfer:      5000000   # Rs. 50 lakh
+
+# SBI-specific risk flags
+risk_flags:
+  dormant_activation_days: 180  # Flag if dormant >180 days
+  velocity_threshold:       0.90
+  fan_out_threshold:        10
