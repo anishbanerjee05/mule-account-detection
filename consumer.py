@@ -163,10 +163,35 @@ def compute_behavioral_features(state, total_txn, total_sent, max_amount,
 
 
 # ── GNN embedding retrieval ───────────────────────────────────────────────────
-def get_gnn_embedding(account_id):
+def get_gnn_embedding(account_id, neighbor_ids=None, behavioral=None,
+                      amount=0.0, payment_format="unknown"):
+    # Check Redis first
     emb_json = r.get(f"embed:{account_id}")
     if emb_json:
         return json.loads(emb_json), True
+
+    # No embedding — request provisional from GNN service
+    try:
+        import requests as req_lib
+        payload = {
+            "account_id":     account_id,
+            "behavioral":     behavioral or [0.0] * 12,
+            "neighbor_ids":   neighbor_ids or [],
+            "amount":         amount,
+            "payment_format": payment_format
+        }
+        resp = req_lib.post(
+            "http://localhost:8002/embed",
+            json=payload,
+            timeout=1.0
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data['embedding'], False
+    except Exception:
+        pass
+
+    # GNN service unavailable — fallback to zeros
     return [0.0] * 64, False
 
 
@@ -220,7 +245,13 @@ try:
             )
 
             # Step 3 — Retrieve 64-dim GNN embedding from Redis
-            gnn_embedding, has_embed = get_gnn_embedding(account_id)
+            gnn_embedding, has_embed = get_gnn_embedding(
+                account_id,
+                neighbor_ids   = list(unique_dest)[:10],
+                behavioral     = behavioral,
+                amount         = amount,
+                payment_format = event.get('payment_format', 'unknown')
+            )
 
             # Step 4 — Concatenate 76-feature hybrid vector
             features_hybrid = behavioral + gnn_embedding
