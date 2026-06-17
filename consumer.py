@@ -9,7 +9,7 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
-print("Starting mule detection consumer v6 (fixed + hybrid model)...")
+print("Starting mule detection consumer v7 (hybrid in-process model)...")
 
 # ── Load models directly — no HTTP calls ──────────────────────────────────────
 print("Loading hybrid XGBoost model...")
@@ -34,7 +34,7 @@ r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 r.ping()
 print("Redis connected")
 
-# ── Load IBM AML laundering labels for account-level confirmed status ─────────
+# ── Load IBM AML laundering labels ────────────────────────────────────────────
 print("Loading IBM AML laundering account labels...")
 try:
     df_ibm = pd.read_csv('ibm_aml_small.csv')
@@ -47,26 +47,22 @@ except Exception as e:
     print(f"Could not load IBM AML labels: {e}")
 
 # ── Kafka consumer ────────────────────────────────────────────────────────────
+group_id = f'mule-detector-{int(datetime.now().timestamp())}'
+print(f"Consumer group: {group_id}")
+
 consumer = Consumer({
     'bootstrap.servers':  'localhost:9092',
-    'group.id':           'mule-detector-v7',
+    'group.id':           group_id,
     'auto.offset.reset':  'earliest',
     'enable.auto.commit': True,
     'fetch.min.bytes':    1,
     'fetch.wait.max.ms':  500,
 })
 consumer.subscribe(['transactions-raw'])
+print("Subscribed to transactions-raw")
 
 # ── Kafka producer for risk scores ────────────────────────────────────────────
 risk_producer = Producer({'bootstrap.servers': 'localhost:9092'})
-
-# ── Behavioral feature columns ────────────────────────────────────────────────
-BEHAVIORAL_FEATURES = [
-    'velocity_ratio', 'balance_retention_rate', 'fan_out_degree',
-    'cross_bank_degree', 'round_amount_ratio', 'structuring_score',
-    'amount_variance_score', 'session_burst_score', 'dormancy_ratio',
-    'total_transactions', 'avg_amount', 'max_amount'
-]
 
 processed = 0
 flagged   = 0
@@ -89,10 +85,10 @@ def update_account_state(account_id, amount, bank_to):
             'first_seen':    str(processed),
         }
 
-    total_txn     = int(state['total_txn'])    + 1
-    total_sent    = float(state['total_sent']) + amount
+    total_txn     = int(state['total_txn'])      + 1
+    total_sent    = float(state['total_sent'])   + amount
     max_amount    = max(float(state['max_amount']), amount)
-    sum_amount    = float(state['sum_amount'])  + amount
+    sum_amount    = float(state['sum_amount'])   + amount
     sum_sq_amount = float(state['sum_sq_amount']) + amount ** 2
 
     unique_dest  = set(state['unique_dest'].split(','))  if state['unique_dest']  else set()
@@ -226,7 +222,7 @@ try:
             # Step 3 — Retrieve 64-dim GNN embedding from Redis
             gnn_embedding, has_embed = get_gnn_embedding(account_id)
 
-            # Step 4 — Concatenate → 76-feature hybrid vector
+            # Step 4 — Concatenate 76-feature hybrid vector
             features_hybrid = behavioral + gnn_embedding
 
             # Step 5 — Scale and score in-process
@@ -238,14 +234,11 @@ try:
             tier         = get_risk_tier(prob)
 
             # Step 6 — Account-level laundering status
-            # Check IBM AML labels AND any previously confirmed transaction
             is_confirmed_launder = (
                 account_id in laundering_accounts or
                 is_launder == 1 or
                 r.get(f"launder_status:{account_id}") == "1"
             )
-
-            # Persist laundering status for this account
             if is_launder == 1 or account_id in laundering_accounts:
                 r.set(f"launder_status:{account_id}", "1", ex=86400 * 7)
 
@@ -253,21 +246,21 @@ try:
             if flagged_flag:
                 flagged += 1
                 alert = {
-                    "account_id":          account_id,
-                    "amount":              amount,
-                    "probability":         round(prob, 4),
-                    "tier":                tier,
-                    "timestamp":           event['timestamp'],
-                    "is_laundering":       is_launder,
-                    "account_laundering":  is_confirmed_launder,
-                    "payment_format":      event.get('payment_format', 'unknown'),
-                    "total_txn":           total_txn,
-                    "fan_out":             len(unique_dest),
-                    "cross_bank":          len(unique_banks),
-                    "has_gnn_embed":       has_embed,
-                    "max_amount":          max_amt,
-                    "avg_amount":          (sum_amt / total_txn
-                                            if total_txn > 0 else amount),
+                    "account_id":         account_id,
+                    "amount":             amount,
+                    "probability":        round(prob, 4),
+                    "tier":               tier,
+                    "timestamp":          event['timestamp'],
+                    "is_laundering":      is_launder,
+                    "account_laundering": is_confirmed_launder,
+                    "payment_format":     event.get('payment_format', 'unknown'),
+                    "total_txn":          total_txn,
+                    "fan_out":            len(unique_dest),
+                    "cross_bank":         len(unique_banks),
+                    "has_gnn_embed":      has_embed,
+                    "max_amount":         max_amt,
+                    "avg_amount":         (sum_amt / total_txn
+                                           if total_txn > 0 else amount),
                 }
                 r.lpush("alerts", json.dumps(alert))
                 r.ltrim("alerts", 0, 999)
@@ -287,11 +280,11 @@ try:
 
             processed += 1
 
-            # Step 9 — Print output
-            if flagged_flag or processed % 100 == 0:
+            # Step 9 — Print every flagged + every 10th
+            if flagged_flag or processed % 10 == 0:
                 ts        = datetime.now().strftime("%H:%M:%S")
-                alert_str = "FLAGGED"  if flagged_flag           else ""
-                laund_str = "LAUNDER"  if is_confirmed_launder   else ""
+                alert_str = "FLAGGED" if flagged_flag         else ""
+                laund_str = "LAUNDER" if is_confirmed_launder else ""
                 gnn_str   = "GNN+" if has_embed else "GNN-"
                 print(f"{ts:<10} {account_id[:16]:<18} {amount:>15,.2f} "
                       f"{prob:>8.4f} {tier:<22} {gnn_str:<6} "
