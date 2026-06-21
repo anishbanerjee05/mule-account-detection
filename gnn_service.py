@@ -5,6 +5,8 @@ import numpy as np
 import redis
 import json
 import pickle
+import pandas as pd
+import os
 from fastapi import FastAPI
 from pydantic import BaseModel
 from typing import List, Optional
@@ -70,6 +72,55 @@ r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 r.ping()
 print("Redis connected")
 
+# ── Persistent embedding store (NEW) ─────────────────────────────────────────
+# Layer 2 of the 3-tier lookup chain: Redis (hot cache) -> persistent
+# store (this) -> live forward pass (last resort, see compute_embedding
+# below). Built by export_embeddings.py from the real trained model
+# against the full graph. Loaded once per worker process at startup —
+# with workers=4, each worker is a separate OS process and needs its
+# own in-memory copy; they cannot share a Python dict across processes.
+# This in-memory load is fast (a single Parquet read, no network I/O)
+# and safe to repeat per worker.
+#
+# REDIS PRE-WARMING IS NOT DONE HERE. An earlier version of this file
+# pre-warmed Redis (579,735 SET calls) directly in this startup block,
+# once per worker. Under workers=4 on Windows, that caused a crash
+# loop: uvicorn's process supervisor treated the slow startup as an
+# unresponsive worker, killed it, and respawned it, repeating
+# indefinitely without the service ever stabilizing. Heavy synchronous
+# I/O at multi-process startup is fragile on Windows in a way it isn't
+# on Linux.
+#
+# Fix: pre-warming is now a SEPARATE one-time script (see
+# warm_redis_cache.py) you run ONCE before starting this service, not
+# something every worker repeats. This service now only loads the
+# persistent store into memory here (fast, lightweight, per-worker is
+# fine) and falls back to Tier 2 (persistent_embeddings dict) on a
+# Redis miss at request time, same as before -- the only change is
+# WHEN Redis gets pre-populated, not whether the 3-tier lookup works.
+PERSISTENT_STORE_PATH = 'embeddings_store.parquet'
+persistent_embeddings = {}  # account_id (str) -> list[float] (64-dim)
+
+if os.path.exists(PERSISTENT_STORE_PATH):
+    print(f"Loading persistent embedding store from {PERSISTENT_STORE_PATH}...")
+    _df = pd.read_parquet(PERSISTENT_STORE_PATH)
+    # Parquet round-trips list-of-float columns back as numpy ndarrays,
+    # not plain Python lists -- json.dumps() cannot serialize ndarrays
+    # directly, so convert explicitly here, once, at load time, rather
+    # than at every single lookup call.
+    persistent_embeddings = {
+        account_id: (embedding.tolist() if hasattr(embedding, 'tolist') else list(embedding))
+        for account_id, embedding in zip(_df['account_id'], _df['embedding'])
+    }
+    print(f"Loaded {len(persistent_embeddings):,} persistent embeddings into memory")
+    print("(Run warm_redis_cache.py separately, once, to pre-populate "
+          "Redis -- not done automatically here, see comment above.)")
+else:
+    print(f"WARNING: {PERSISTENT_STORE_PATH} not found. Running without "
+          f"persistent fallback — a Redis flush will degrade embedding "
+          f"quality until live traffic rebuilds the cache. Run "
+          f"export_embeddings.py to create this file.")
+
 # ── Feature order must match training ────────────────────────────────────────
 BEHAVIORAL_FEATURES = [
     'velocity_ratio', 'balance_retention_rate', 'fan_out_degree',
@@ -98,11 +149,52 @@ class EmbeddingResponse(BaseModel):
 @app.post("/embed", response_model=EmbeddingResponse)
 def compute_embedding(req: EmbeddingRequest):
     """
-    Compute a GNN embedding for a new account using:
-    1. Its own behavioral features (GNN forward pass)
-    2. Pre-computed neighbor embeddings from Redis (EdgeProp approximation)
+    Resolve a GNN embedding for an account using a 3-tier chain:
+    1. Redis (hot cache) -- checked first, fastest path
+    2. Persistent store (in-memory dict, loaded from
+       embeddings_store.parquet at startup) -- a cache miss here means
+       this account has a REAL trained embedding that just isn't in
+       Redis right now (e.g. TTL expired), not that it was never
+       trained. Returning this is strictly better than recomputing a
+       weak, no-graph-context live embedding for an account the model
+       has already seen during training.
+    3. Live single-account forward pass -- TRUE last resort, only for
+       accounts genuinely absent from the trained graph (new accounts
+       since the last training run). This is the only tier that uses
+       neighbor_ids/behavioral features from the request.
     """
-    # Step 1 — Retrieve neighbor embeddings from Redis
+    # ── Tier 1 — Redis hot cache ─────────────────────────────────────────────
+    cached = r.get(f"embed:{req.account_id}")
+    if cached:
+        embedding_list = json.loads(cached)
+        return EmbeddingResponse(
+            account_id     = req.account_id,
+            embedding      = embedding_list,
+            method         = "redis_cache",
+            n_neighbors    = -1,  # not applicable, not recomputed
+            is_provisional = False,
+            computed_at    = datetime.now().isoformat()
+        )
+
+    # ── Tier 2 — Persistent store (in-memory, loaded at startup) ───────────
+    if req.account_id in persistent_embeddings:
+        embedding_list = persistent_embeddings[req.account_id]
+        # Backfill Redis so the next lookup for this account is a Tier 1
+        # hit again, without needing another persistent-store lookup.
+        r.set(f"embed:{req.account_id}", json.dumps(embedding_list), ex=21600)
+        return EmbeddingResponse(
+            account_id     = req.account_id,
+            embedding      = embedding_list,
+            method         = "persistent_store",
+            n_neighbors    = -1,
+            is_provisional = False,
+            computed_at    = datetime.now().isoformat()
+        )
+
+    # ── Tier 3 — Live forward pass (true last resort) ───────────────────────
+    # Account genuinely not in the trained graph. Use the simplified
+    # single-account approximation with whatever neighbor context the
+    # request provides.
     neighbor_embeddings = []
     if req.neighbor_ids:
         pipe = r.pipeline()
@@ -115,18 +207,15 @@ def compute_embedding(req: EmbeddingRequest):
 
     n_neighbors = len(neighbor_embeddings)
 
-    # Step 2 — Pad behavioral features to 15 (GNN input size)
     features = req.behavioral[:12]
     while len(features) < 15:
         features.append(0.0)
     x = torch.tensor([features], dtype=torch.float32)
 
-    # Step 3 — GNN forward pass
     with torch.no_grad():
         embedding = model.get_embedding(x, neighbor_embeddings)
         embedding_np = embedding.squeeze().numpy()
 
-    # Determine method
     if n_neighbors >= 3:
         method = f"gnn_forward_{n_neighbors}_neighbors"
     elif n_neighbors > 0:
@@ -134,17 +223,6 @@ def compute_embedding(req: EmbeddingRequest):
     else:
         method = "gnn_forward_no_neighbors"
 
-    # Step 4 — Store embedding in Redis with 6-hour TTL.
-    # NOTE: the embed_meta write that used to happen here has been
-    # REMOVED. consumer.py never reads embed_meta:* at all — it only
-    # ever calls embed:{account_id} (see get_gnn_embedding() in
-    # consumer.py). That second write was a pure cost with zero
-    # consumer-side benefit: every /embed call was paying for 2 Redis
-    # writes when only 1 was ever used downstream. Removing it cuts
-    # per-request Redis round-trips from 3 (pipeline GET + 2x SET) to
-    # 2 (pipeline GET + 1x SET), with no change in behavior anywhere
-    # that actually reads this data. The dashboard does not read
-    # embed_meta either — confirmed against dashboard.py.
     r.set(
         f"embed:{req.account_id}",
         json.dumps(embedding_np.tolist()),
@@ -188,27 +266,53 @@ def health():
 def stats():
     stored = len(r.keys("embed:*"))
     return {
-        "total_embeddings":       stored,
-        "real_gnn_embeddings":    stored,
+        "redis_cached_embeddings":     stored,
+        "persistent_store_embeddings": len(persistent_embeddings),
+        "persistent_store_loaded":     len(persistent_embeddings) > 0,
     }
 
 if __name__ == "__main__":
     print("\nGNN Embedding Microservice starting on port 8002...")
-    # FIX: was running with uvicorn's default single-worker, effectively
+    # FIX 1: was running with uvicorn's default single-worker, effectively
     # synchronous request handling — every /embed call had to fully
     # complete (Redis I/O + forward pass + Redis write) before the next
     # request was even picked up. Under consumer.py's rapid-fire calls
     # with a cold (just-flushed) Redis cache, this serialization was the
     # actual bottleneck, not the model or Redis individually being slow.
     #
-    # workers=4 runs 4 separate worker processes, each with their own
+    # workers=2 runs 2 separate worker processes, each with their own
     # model copy in memory, handling requests in parallel via uvicorn's
-    # process manager. This is the standard fix for synchronous FastAPI
-    # endpoints under concurrent load. Safe here because:
+    # process manager.
+    #
+    # NOTE: originally set to workers=4, reduced to workers=2 due to a
+    # real memory constraint on this machine (~6.2GB available out of
+    # 16.8GB total, the rest consumed by Docker's Redis/Kafka/Zookeeper/
+    # Postgres containers).
+    #
+    # FIX 2 (the actual root cause of the repeated crash loop): uvicorn's
+    # default `timeout_worker_healthcheck` is 5 SECONDS. Measured
+    # standalone, loading embeddings_store.parquet (579,735 rows) and
+    # converting it to a Python dict takes ~4.8s by itself -- under real
+    # startup conditions, with the worker ALSO loading the full PyTorch
+    # model and competing with a sibling worker for CPU/memory at the
+    # same time, this consistently exceeded 5 seconds. Uvicorn's
+    # supervisor then concluded the worker was unresponsive and killed
+    # it -- even though it was simply still busy, not actually dead.
+    # That killed worker immediately respawned, hit the same slow
+    # startup path, and got killed again: the crash loop.
+    #
+    # This was confirmed by direct measurement, not assumed: see the
+    # standalone timing test that produced "Read: 1.6s, Convert: 3.2s"
+    # during debugging. Extending the healthcheck timeout to 30s gives
+    # workers a realistic window to finish startup before being judged
+    # unresponsive.
+    #
+    # Safe because:
     #   - the model is read-only at inference time (model.eval(), no
     #     shared mutable state to race on)
     #   - each worker gets its own Redis connection pool, and Redis
     #     itself safely handles concurrent clients
     # Reload must stay False — reload=True is incompatible with workers>1.
     uvicorn.run("gnn_service:app", host="0.0.0.0", port=8002,
-                workers=4, reload=False)
+                workers=2, reload=False,
+                timeout_worker_healthcheck=30)
