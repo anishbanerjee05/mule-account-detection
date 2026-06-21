@@ -19,3 +19,4 @@ xgb_hybrid_model.pkl
 scaler_hybrid.pkl
 active_topic.txt
 .vscode/
+embeddings_store.parquet
