@@ -4,9 +4,11 @@ import pickle
 import redis
 import numpy as np
 import pandas as pd
+from topic_config import get_active_topic
 from confluent_kafka import Consumer, Producer
 from datetime import datetime
 import warnings
+import cep_engine
 warnings.filterwarnings('ignore')
 
 print("Starting mule detection consumer v7 (hybrid in-process model)...")
@@ -58,8 +60,9 @@ consumer = Consumer({
     'fetch.min.bytes':    1,
     'fetch.wait.max.ms':  500,
 })
-consumer.subscribe(['transactions-raw'])
-print("Subscribed to transactions-raw")
+TOPIC = get_active_topic()
+consumer.subscribe([TOPIC])
+print(f"Subscribed to {TOPIC}")
 
 # ── Kafka producer for risk scores ────────────────────────────────────────────
 risk_producer = Producer({'bootstrap.servers': 'localhost:9092'})
@@ -273,14 +276,22 @@ try:
             if is_launder == 1 or account_id in laundering_accounts:
                 r.set(f"launder_status:{account_id}", "1", ex=86400 * 7)
 
-            # Step 7 — Store alert in Redis if flagged
-            if flagged_flag:
+          # Step 7 — Run CEP pattern detection (before building the alert,
+            # so any detected patterns can be included in it)
+            cep_alerts = cep_engine.check_patterns(r, event)
+            for cep_alert in cep_alerts:
+                print(f"  >> CEP PATTERN: {cep_alert['pattern_type']} "
+                      f"on {cep_alert['account_id']}")
+
+          # Step 7b — Store alert in Redis if flagged OR if CEP caught something
+            cep_flagged = len(cep_alerts) > 0
+            if flagged_flag or cep_flagged:
                 flagged += 1
                 alert = {
                     "account_id":         account_id,
                     "amount":             amount,
                     "probability":        round(prob, 4),
-                    "tier":               tier,
+                    "tier":               tier if flagged_flag else "CEP — PATTERN MATCH",
                     "timestamp":          event['timestamp'],
                     "is_laundering":      is_launder,
                     "account_laundering": is_confirmed_launder,
@@ -292,6 +303,7 @@ try:
                     "max_amount":         max_amt,
                     "avg_amount":         (sum_amt / total_txn
                                            if total_txn > 0 else amount),
+                    "cep_patterns":       [a['pattern_type'] for a in cep_alerts],
                 }
                 r.lpush("alerts", json.dumps(alert))
                 r.ltrim("alerts", 0, 999)
