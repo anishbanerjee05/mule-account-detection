@@ -102,6 +102,7 @@ st.markdown("""
     .metric-card.safe    { border-top: 3px solid #1E8449; }
     .metric-card.info    { border-top: 3px solid #1A5276; }
     .metric-card.neutral { border-top: 3px solid #5D6D7E; }
+    .metric-card.cep     { border-top: 3px solid #6C3FA8; }
 
     .metric-value {
         font-size: 1.85rem;
@@ -112,6 +113,7 @@ st.markdown("""
     .metric-value.danger  { color: #C0392B; }
     .metric-value.warning { color: #B7791F; }
     .metric-value.safe    { color: #1E8449; }
+    .metric-value.cep     { color: #6C3FA8; }
     .metric-label {
         font-size: 0.65rem;
         font-weight: 500;
@@ -147,6 +149,22 @@ st.markdown("""
     .badge-l2    { background: #B7791F; color: white; }
     .badge-l1    { background: #1E8449; color: white; }
     .badge-clear { background: #5D6D7E; color: white; }
+    .badge-cep   { background: #6C3FA8; color: white; }
+
+    /* ── CEP pattern chip ── */
+    .cep-chip {
+        display: inline-block;
+        font-size: 0.58rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        padding: 1px 6px;
+        margin: 1px 2px 1px 0;
+        border-radius: 8px;
+        background: #EFE6FB;
+        color: #6C3FA8;
+        font-family: 'JetBrains Mono', monospace;
+        border: 1px solid #D9C5F0;
+    }
 
     /* ── Alert table ── */
     .alert-table {
@@ -176,6 +194,7 @@ st.markdown("""
     .alert-table tr.row-l3 td { border-left: 3px solid #C0392B; }
     .alert-table tr.row-l2 td { border-left: 3px solid #B7791F; }
     .alert-table tr.row-l1 td { border-left: 3px solid #1E8449; }
+    .alert-table tr.row-cep td { border-left: 3px solid #6C3FA8; background: #FBF9FE; }
     .alert-table .confirmed-yes {
         color: #C0392B;
         font-weight: 600;
@@ -269,25 +288,64 @@ def get_alerts(n=200):
             pass
     return alerts
 
+def is_cep_only(alert):
+    """True if this alert exists ONLY because CEP caught a pattern —
+    the model's own tier did not independently flag it (tier was set
+    to the CEP marker in consumer.py rather than L1/L2/L3)."""
+    tier = alert.get('tier', '')
+    return tier == "CEP — PATTERN MATCH"
+
+def has_cep_pattern(alert):
+    """True if this alert has ANY CEP pattern attached, regardless of
+    whether the model also flagged it independently."""
+    return bool(alert.get('cep_patterns'))
+
 def get_stats(alerts):
     total     = len(alerts)
     l3        = sum(1 for a in alerts if 'L3' in a.get('tier', ''))
     l2        = sum(1 for a in alerts if 'L2' in a.get('tier', '') and 'L3' not in a.get('tier', ''))
     l1        = sum(1 for a in alerts if 'L1' in a.get('tier', '') and 'L2' not in a.get('tier', '') and 'L3' not in a.get('tier', ''))
+    cep_only  = sum(1 for a in alerts if is_cep_only(a))
+    cep_total = sum(1 for a in alerts if has_cep_pattern(a))
     confirmed = sum(1 for a in alerts if a.get('account_laundering') is True or a.get('is_laundering') == 1)
     gnn       = sum(1 for a in alerts if a.get('has_gnn_embed'))
     gnn_pct   = int(gnn / total * 100) if total > 0 else 0
-    return total, l3, l2, l1, confirmed, gnn_pct
+    return total, l3, l2, l1, cep_only, cep_total, confirmed, gnn_pct
 
 def deduplicate_alerts(alerts):
+    """Keep the highest-priority alert per account. Priority order:
+    1) CEP-only catches always win (model missed it, CEP didn't —
+       this is the account we most want visible)
+    2) otherwise, highest probability wins, as before
+    """
     seen   = {}
     counts = {}
     for a in alerts:
         aid = a.get('account_id', '')
         counts[aid] = counts.get(aid, 0) + 1
-        if aid not in seen or a.get('probability', 0) > seen[aid].get('probability', 0):
+        if aid not in seen:
             seen[aid] = a
+            continue
+        existing = seen[aid]
+        existing_cep_only = is_cep_only(existing)
+        new_cep_only       = is_cep_only(a)
+        if new_cep_only and not existing_cep_only:
+            seen[aid] = a
+        elif new_cep_only == existing_cep_only:
+            if a.get('probability', 0) > existing.get('probability', 0):
+                seen[aid] = a
     return seen, counts
+
+def sort_for_display(deduped_items):
+    """Sort so CEP-only catches always surface at the very top of the
+    table, regardless of their (typically low) model score — since the
+    entire point of CEP is to catch what the model's score would have
+    missed. Within each group, sort by probability as before."""
+    cep_group    = [item for item in deduped_items if is_cep_only(item[1])]
+    normal_group = [item for item in deduped_items if not is_cep_only(item[1])]
+    cep_group.sort(key=lambda x: x[1].get('probability', 0), reverse=True)
+    normal_group.sort(key=lambda x: x[1].get('probability', 0), reverse=True)
+    return cep_group + normal_group
 
 # ── Header ────────────────────────────────────────────────────────────────────
 now = datetime.now().strftime('%Y-%m-%d  %H:%M:%S')
@@ -296,7 +354,7 @@ st.markdown(f"""
     <div class="sys-header-left">
         <h1>Mule Account Detection System</h1>
         <p>CyberPeace Foundation &nbsp;/&nbsp; Research Wing &nbsp;/&nbsp;
-        Hybrid XGBoost + GNN &nbsp;/&nbsp; IBM AML &nbsp;/&nbsp;
+        Hybrid XGBoost + GNN + CEP &nbsp;/&nbsp; IBM AML &nbsp;/&nbsp;
         PMLA 2002 &nbsp;/&nbsp; RBI FREE-AI 2025</p>
     </div>
     <div class="sys-header-right">
@@ -316,6 +374,7 @@ with st.sidebar:
     st.markdown(f"L3 Auto-Freeze: **{L3_THRESHOLD}+**")
     st.markdown(f"L2 Soft Hold: **{L2_THRESHOLD} – {L3_THRESHOLD}**")
     st.markdown(f"L1 Review: **{L1_THRESHOLD} – {L2_THRESHOLD}**")
+    st.markdown(f"CEP — Pattern Match: **independent of score**")
     st.markdown("---")
     st.markdown("### Model")
     st.markdown(f"Hybrid XGBoost v1")
@@ -325,6 +384,11 @@ with st.sidebar:
     st.markdown(f"AUC-ROC: **{config['auc_roc']:.4f}**")
     st.markdown(f"Avg Precision: **{config['avg_precision']:.4f}**")
     st.markdown("---")
+    st.markdown("### CEP Patterns")
+    for p in ["RAPID_FORWARD", "CONCENTRATED_DESTINATION",
+              "BURST_ACTIVATION", "FAN_OUT_SPIKE"]:
+        st.markdown(f"- {p}")
+    st.markdown("---")
     st.markdown("### Regulatory Alignment")
     for reg in ["PMLA 2002", "RBI Master Directions",
                 "RBI Directive Jul 2024", "DPDP Act 2023",
@@ -332,17 +396,17 @@ with st.sidebar:
         st.markdown(f"- {reg}")
 
 # ── Fetch data ────────────────────────────────────────────────────────────────
-alerts                = get_alerts(200)
-total, l3, l2, l1, confirmed, gnn_pct = get_stats(alerts)
-deduped, counts       = deduplicate_alerts(alerts)
+alerts = get_alerts(200)
+total, l3, l2, l1, cep_only, cep_total, confirmed, gnn_pct = get_stats(alerts)
+deduped, counts = deduplicate_alerts(alerts)
 
 # ── Metric cards ──────────────────────────────────────────────────────────────
-c1, c2, c3, c4, c5, c6 = st.columns(6)
+c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
 
 def metric_card(col, value, label, style="neutral"):
     col.markdown(f"""
     <div class="metric-card {style}">
-        <div class="metric-value {style if style in ('danger','warning','safe') else ''}">{value}</div>
+        <div class="metric-value {style if style in ('danger','warning','safe','cep') else ''}">{value}</div>
         <div class="metric-label">{label}</div>
     </div>""", unsafe_allow_html=True)
 
@@ -350,8 +414,19 @@ metric_card(c1, total,     "Total Alerts",          "info")
 metric_card(c2, l3,        "L3 Auto-Freeze",         "danger")
 metric_card(c3, l2,        "L2 Soft Hold",           "warning")
 metric_card(c4, l1,        "L1 Review",              "safe")
-metric_card(c5, confirmed, "Confirmed Laundering",   "danger")
-metric_card(c6, f"{gnn_pct}%", "GNN-Assisted",       "neutral")
+metric_card(c5, cep_only,  "CEP-Only Catches",       "cep")
+metric_card(c6, confirmed, "Confirmed Laundering",   "danger")
+metric_card(c7, f"{gnn_pct}%", "GNN-Assisted",       "neutral")
+
+if cep_only > 0:
+    st.markdown(
+        f"<div style='background:#FBF9FE;border:1px solid #D9C5F0;border-radius:3px;"
+        f"padding:0.6rem 1rem;margin-bottom:1rem;font-size:0.8rem;color:#4A2A78;'>"
+        f"<strong>{cep_only} account(s)</strong> flagged by behavioral pattern detection "
+        f"(CEP) alone — the model's probability score did not independently cross "
+        f"threshold for these. Shown pinned at the top of the alert queue below."
+        f"</div>", unsafe_allow_html=True
+    )
 
 st.markdown("<br>", unsafe_allow_html=True)
 
@@ -360,7 +435,7 @@ left, right = st.columns([3, 2])
 
 # ── LEFT: Alert table ─────────────────────────────────────────────────────────
 with left:
-    st.markdown('<div class="section-label">Alert Queue — Unique Accounts, Ranked by Score</div>',
+    st.markdown('<div class="section-label">Alert Queue — Unique Accounts (CEP-Only Catches Pinned to Top)</div>',
                 unsafe_allow_html=True)
 
     if not deduped:
@@ -370,25 +445,26 @@ with left:
             No alerts detected. Start the producer and consumer to begin real-time detection.
         </div>""", unsafe_allow_html=True)
     else:
-        sorted_accounts = sorted(
-            deduped.items(),
-            key=lambda x: x[1].get('probability', 0),
-            reverse=True
-        )
+        sorted_accounts = sort_for_display(list(deduped.items()))
 
         rows_html = ""
         for aid, a in sorted_accounts[:40]:
-            tier  = a.get('tier', 'CLEAR')
-            prob  = a.get('probability', 0)
-            ts    = a.get('timestamp', '')[:16].replace('T', ' ')
-            cnt   = counts.get(aid, 1)
-            fan   = a.get('fan_out', '-')
-            xbank = a.get('cross_bank', '-')
-            txn   = a.get('total_txn', '-')
-            gnn   = 'Yes' if a.get('has_gnn_embed') else 'No'
-            conf  = a.get('account_laundering', False) or a.get('is_laundering', 0) == 1
+            tier     = a.get('tier', 'CLEAR')
+            prob     = a.get('probability', 0)
+            ts       = a.get('timestamp', '')[:16].replace('T', ' ')
+            cnt      = counts.get(aid, 1)
+            fan      = a.get('fan_out', '-')
+            xbank    = a.get('cross_bank', '-')
+            txn      = a.get('total_txn', '-')
+            gnn      = 'Yes' if a.get('has_gnn_embed') else 'No'
+            conf     = a.get('account_laundering', False) or a.get('is_laundering', 0) == 1
+            patterns = a.get('cep_patterns', []) or []
+            cep_flag = is_cep_only(a)
 
-            if 'L3' in tier:
+            if cep_flag:
+                badge   = '<span class="badge badge-cep">CEP</span>'
+                row_cls = 'row-cep'
+            elif 'L3' in tier:
                 badge   = '<span class="badge badge-l3">L3</span>'
                 row_cls = 'row-l3'
             elif 'L2' in tier:
@@ -400,6 +476,10 @@ with left:
             else:
                 badge   = '<span class="badge badge-clear">CLR</span>'
                 row_cls = ''
+
+            pattern_chips = ''.join(
+                f'<span class="cep-chip">{p}</span>' for p in patterns
+            ) if patterns else '<span style="color:#B8C2CC">—</span>'
 
             confirmed_cell = (
                 '<td class="confirmed-yes">YES</td>'
@@ -413,6 +493,7 @@ with left:
                 <td style="text-align:right">{a.get('amount',0):,.0f}</td>
                 <td style="text-align:right"><strong>{prob:.4f}</strong></td>
                 <td>{badge}</td>
+                <td>{pattern_chips}</td>
                 <td style="text-align:right">{cnt}</td>
                 <td style="text-align:right">{txn}</td>
                 <td style="text-align:right">{fan}</td>
@@ -430,6 +511,7 @@ with left:
                     <th style="text-align:right">Amount (Rs.)</th>
                     <th style="text-align:right">Score</th>
                     <th>Tier</th>
+                    <th>CEP Pattern</th>
                     <th style="text-align:right">Alerts</th>
                     <th style="text-align:right">Txn</th>
                     <th style="text-align:right">Fan-Out</th>
@@ -478,11 +560,12 @@ with right:
     # Tier breakdown
     st.markdown('<div class="section-label">Alert Tier Breakdown</div>',
                 unsafe_allow_html=True)
-    if total > 0 and (l3 + l2 + l1) > 0:
+    if total > 0 and (l3 + l2 + l1 + cep_only) > 0:
         fig2, ax2 = plt.subplots(figsize=(4, 2.2))
         data   = [(l3,'L3 Auto-Freeze','#C0392B'),
                   (l2,'L2 Soft Hold',  '#B7791F'),
-                  (l1,'L1 Review',     '#1E8449')]
+                  (l1,'L1 Review',     '#1E8449'),
+                  (cep_only,'CEP-Only','#6C3FA8')]
         data   = [(s, l, c) for s, l, c in data if s > 0]
         sizes, labels, colors = zip(*data)
         wedges, texts, autotexts = ax2.pie(
@@ -502,23 +585,33 @@ with right:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # Top accounts
-    st.markdown('<div class="section-label">Highest Risk Accounts</div>',
+    st.markdown('<div class="section-label">Highest Priority Accounts</div>',
                 unsafe_allow_html=True)
     if deduped:
-        top5 = sorted(deduped.items(),
-                      key=lambda x: x[1].get('probability', 0),
-                      reverse=True)[:5]
+        top5 = sort_for_display(list(deduped.items()))[:5]
         for aid, a in top5:
-            prob  = a.get('probability', 0)
-            cnt   = counts.get(aid, 1)
-            tier  = a.get('tier', '')
-            color = '#C0392B' if 'L3' in tier else '#B7791F' if 'L2' in tier else '#1E8449'
+            prob     = a.get('probability', 0)
+            cnt      = counts.get(aid, 1)
+            tier     = a.get('tier', '')
+            cep_flag = is_cep_only(a)
+            if cep_flag:
+                color = '#6C3FA8'
+                tag   = 'CEP'
+            elif 'L3' in tier:
+                color = '#C0392B'
+                tag   = 'L3'
+            elif 'L2' in tier:
+                color = '#B7791F'
+                tag   = 'L2'
+            else:
+                color = '#1E8449'
+                tag   = 'L1'
             st.markdown(
                 f"<div style='display:flex;justify-content:space-between;"
                 f"padding:0.3rem 0;border-bottom:1px solid #F0F2F5;"
                 f"font-size:0.75rem'>"
                 f"<span style='font-family:JetBrains Mono,monospace;color:#0F1923'>{aid[:14]}</span>"
-                f"<span style='color:{color};font-weight:600'>{prob:.4f}</span>"
+                f"<span style='color:{color};font-weight:600'>{tag} · {prob:.4f}</span>"
                 f"<span style='color:#7F8C9A'>{cnt} alerts</span>"
                 f"</div>",
                 unsafe_allow_html=True
@@ -530,17 +623,14 @@ st.markdown('<div class="section-label">Decision Explanation — SHAP Feature At
             unsafe_allow_html=True)
 
 if deduped:
-    account_list = [aid for aid, _ in sorted(
-        deduped.items(),
-        key=lambda x: x[1].get('probability', 0),
-        reverse=True
-    )]
+    account_list = [aid for aid, _ in sort_for_display(list(deduped.items()))]
     selected = st.selectbox("Select account to investigate",
                             account_list, label_visibility="collapsed")
 
     if selected:
         best_alert = deduped[selected]
         alert_count = counts.get(selected, 1)
+        cep_patterns_selected = best_alert.get('cep_patterns', []) or []
 
         exp_left, exp_right = st.columns([1, 2])
 
@@ -553,6 +643,7 @@ if deduped:
                 ("Total alerts",     str(alert_count)),
                 ("Max score",        f"{best_alert.get('probability',0):.4f}"),
                 ("Risk tier",        best_alert.get('tier','—')),
+                ("CEP patterns",     ", ".join(cep_patterns_selected) if cep_patterns_selected else "None"),
                 ("Transactions",     str(best_alert.get('total_txn','—'))),
                 ("Fan-out degree",   str(best_alert.get('fan_out','—'))),
                 ("Cross-bank",       str(best_alert.get('cross_bank','—'))),
@@ -566,6 +657,8 @@ if deduped:
             html_fields = ""
             for label, value in fields:
                 color = "#C0392B" if label == "Confirmed launder" and value == "YES" else "#0F1923"
+                if label == "CEP patterns" and cep_patterns_selected:
+                    color = "#6C3FA8"
                 html_fields += (
                     f"<div class='acct-field'>"
                     f"<span class='acct-field-label'>{label}</span>"
@@ -585,6 +678,13 @@ if deduped:
                     if prob >= L3_THRESHOLD
                     else "Analyst review and enhanced due diligence required"
                 )
+                cep_section = (
+                    f"\nCEP BEHAVIORAL PATTERNS DETECTED\n"
+                    f"{', '.join(cep_patterns_selected)}\n"
+                    f"Note: These patterns were detected via stateful sequence analysis "
+                    f"independent of the XGBoost probability score.\n"
+                    if cep_patterns_selected else ""
+                )
                 str_text = f"""SUSPICIOUS TRANSACTION REPORT
 FIU-IND FORMAT — PMLA 2002 SECTION 12
 
@@ -596,7 +696,7 @@ Account ID:           {selected}
 Risk Tier:            {tier}
 Fraud Probability:    {prob:.4f}
 Total System Alerts:  {alert_count}
-
+{cep_section}
 BEHAVIORAL INDICATORS
 Total Transactions:    {best_alert.get('total_txn','—')}
 Fan-Out Degree:        {best_alert.get('fan_out','—')} unique destination banks
@@ -612,6 +712,7 @@ Phase 1:   Rule Engine — PMLA-aligned threshold rules (R1-R5)
 Phase 2:   XGBoost Classifier — 12 behavioral feature vectors
 Phase 4:   MuleGNN (GCN + EdgeProp) — 64-dimensional graph embeddings
 Hybrid:    76-feature XGBoost trained on behavioral + GNN features
+CEP:       Stateful multi-transaction pattern detection (4 pattern types)
 Score:     {prob:.4f} / threshold: {config['optimal_threshold']:.4f}
 AUC-ROC:   {config['auc_roc']:.4f}
 
@@ -720,6 +821,16 @@ Intern:        Anish Banerjee — B.Tech CSE, DBS Global University
                         f"GNN graph embeddings: <strong>{gnn_pct_contrib:.0f}%</strong>"
                         f"</div>",
                         unsafe_allow_html=True
+                    )
+
+                if cep_patterns_selected:
+                    st.markdown(
+                        f"<div style='font-size:0.72rem;color:#6C3FA8;margin-top:0.3rem'>"
+                        f"This account was also flagged by CEP behavioral pattern detection: "
+                        f"<strong>{', '.join(cep_patterns_selected)}</strong> — a signal the "
+                        f"SHAP attribution above does not capture, since it depends on "
+                        f"transaction sequence and timing rather than single-snapshot features."
+                        f"</div>", unsafe_allow_html=True
                     )
             else:
                 st.markdown(
