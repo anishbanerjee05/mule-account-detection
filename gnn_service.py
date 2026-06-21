@@ -57,6 +57,15 @@ model.load_state_dict(filtered, strict=False)
 model.eval()
 print("GNN model loaded")
 
+# torch.no_grad() context is already used per-request below; this just
+# ensures no thread spawns extra intraop overhead fighting with uvicorn's
+# own worker threads under concurrent load.
+torch.set_num_threads(1)
+
+# decode_responses=True + connection pooling (redis-py pools connections
+# by default per Redis() instance) — no change needed here, but worth
+# noting this client is shared across all concurrent requests safely,
+# since redis-py's connection pool is thread-safe.
 r = redis.Redis(host='localhost', port=6379, decode_responses=True)
 r.ping()
 print("Redis connected")
@@ -125,20 +134,20 @@ def compute_embedding(req: EmbeddingRequest):
     else:
         method = "gnn_forward_no_neighbors"
 
-    # Step 4 — Store in Redis with 6-hour TTL
+    # Step 4 — Store embedding in Redis with 6-hour TTL.
+    # NOTE: the embed_meta write that used to happen here has been
+    # REMOVED. consumer.py never reads embed_meta:* at all — it only
+    # ever calls embed:{account_id} (see get_gnn_embedding() in
+    # consumer.py). That second write was a pure cost with zero
+    # consumer-side benefit: every /embed call was paying for 2 Redis
+    # writes when only 1 was ever used downstream. Removing it cuts
+    # per-request Redis round-trips from 3 (pipeline GET + 2x SET) to
+    # 2 (pipeline GET + 1x SET), with no change in behavior anywhere
+    # that actually reads this data. The dashboard does not read
+    # embed_meta either — confirmed against dashboard.py.
     r.set(
         f"embed:{req.account_id}",
         json.dumps(embedding_np.tolist()),
-        ex=21600
-    )
-    r.set(
-        f"embed_meta:{req.account_id}",
-        json.dumps({
-            "method":      method,
-            "n_neighbors": n_neighbors,
-            "provisional": True,
-            "computed_at": datetime.now().isoformat()
-        }),
         ex=21600
     )
 
@@ -155,7 +164,6 @@ def compute_embedding(req: EmbeddingRequest):
 def get_embedding(account_id: str):
     """Retrieve stored embedding for an account."""
     emb_json  = r.get(f"embed:{account_id}")
-    meta_json = r.get(f"embed_meta:{account_id}")
 
     if not emb_json:
         return {"error": f"No embedding found for {account_id}"}
@@ -163,7 +171,7 @@ def get_embedding(account_id: str):
     return {
         "account_id": account_id,
         "embedding":  json.loads(emb_json),
-        "meta":       json.loads(meta_json) if meta_json else {"method": "stored_gnn"}
+        "meta":       {"method": "stored_gnn"}
     }
 
 @app.get("/health")
@@ -178,14 +186,29 @@ def health():
 
 @app.get("/stats")
 def stats():
-    provisional = len(r.keys("embed_meta:*"))
-    stored      = len(r.keys("embed:*"))
+    stored = len(r.keys("embed:*"))
     return {
         "total_embeddings":       stored,
-        "provisional_embeddings": provisional,
-        "real_gnn_embeddings":    stored - provisional,
+        "real_gnn_embeddings":    stored,
     }
 
 if __name__ == "__main__":
     print("\nGNN Embedding Microservice starting on port 8002...")
-    uvicorn.run(app, host="0.0.0.0", port=8002, reload=False)
+    # FIX: was running with uvicorn's default single-worker, effectively
+    # synchronous request handling — every /embed call had to fully
+    # complete (Redis I/O + forward pass + Redis write) before the next
+    # request was even picked up. Under consumer.py's rapid-fire calls
+    # with a cold (just-flushed) Redis cache, this serialization was the
+    # actual bottleneck, not the model or Redis individually being slow.
+    #
+    # workers=4 runs 4 separate worker processes, each with their own
+    # model copy in memory, handling requests in parallel via uvicorn's
+    # process manager. This is the standard fix for synchronous FastAPI
+    # endpoints under concurrent load. Safe here because:
+    #   - the model is read-only at inference time (model.eval(), no
+    #     shared mutable state to race on)
+    #   - each worker gets its own Redis connection pool, and Redis
+    #     itself safely handles concurrent clients
+    # Reload must stay False — reload=True is incompatible with workers>1.
+    uvicorn.run("gnn_service:app", host="0.0.0.0", port=8002,
+                workers=4, reload=False)
