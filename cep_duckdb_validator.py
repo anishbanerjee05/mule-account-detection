@@ -163,6 +163,49 @@ def detect_simple_cycle(con):
     print(f"    SIMPLE_CYCLE:           {len(flagged):>6,} accounts  ({time.time()-t0:.1f}s)")
     return flagged
 
+def detect_structuring(con):
+    # STRUCTURING: account makes 3+ transactions in the same day with
+    # amounts just below common reporting thresholds (9000-9999,
+    # 4500-4999, 900-999). Grounded in AMLNet (2024) typology.
+    t0 = time.time()
+    result = con.execute("""
+        SELECT DISTINCT account_from AS account_id
+        FROM (
+            SELECT account_from, DATE_TRUNC('day', ts) AS day,
+                COUNT(*) FILTER (
+                    WHERE amount BETWEEN 9000 AND 9999
+                       OR amount BETWEEN 4500 AND 4999
+                       OR amount BETWEEN 900  AND 999
+                ) AS structured_count
+            FROM raw_txns
+            GROUP BY account_from, DATE_TRUNC('day', ts)
+        )
+        WHERE structured_count >= 3
+    """).fetchall()
+    flagged = {r[0] for r in result}
+    print(f"    STRUCTURING:            {len(flagged):>6,} accounts  ({time.time()-t0:.1f}s)")
+    return flagged
+
+def run_validation(sample_size=None):
+    t0 = time.time()
+    result = con.execute("""
+        SELECT DISTINCT account_from AS account_id
+        FROM (
+            SELECT account_from, DATE_TRUNC('day', ts) AS day,
+                COUNT(*) FILTER (
+                    WHERE amount BETWEEN 9000 AND 9999
+                       OR amount BETWEEN 4500 AND 4999
+                       OR amount BETWEEN 900  AND 999
+                ) AS structured_count
+            FROM raw_txns
+            GROUP BY account_from, DATE_TRUNC('day', ts)
+        )
+        WHERE structured_count >= 3
+    """).fetchall()
+    flagged = {r[0] for r in result}
+    print(f"    STRUCTURING:            {len(flagged):>6,} accounts  ({time.time()-t0:.1f}s)")
+    return flagged
+
 def run_validation(sample_size=None):
     print("\n" + "="*70)
     print("CEP DUCKDB VALIDATOR - IBM AML Aligned Patterns")
@@ -186,11 +229,12 @@ def run_validation(sample_size=None):
         "GATHER_SCATTER": detect_gather_scatter(con),
         "SCATTER_GATHER": detect_scatter_gather(con),
         "SIMPLE_CYCLE":   detect_simple_cycle(con),
+        "STRUCTURING":    detect_structuring(con),
     }
     all_flagged = set()
     for accounts in flagged_by_pattern.values():
         all_flagged |= accounts
-    print(f"\n  All 5 patterns in {time.time()-t_all:.1f}s total")
+    print(f"\n  All 6 patterns in {time.time()-t_all:.1f}s total")
 
     print("\n[3/3] Computing precision against ground truth...")
     confirmed = all_flagged & laundering_accounts
