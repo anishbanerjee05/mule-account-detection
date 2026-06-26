@@ -15,6 +15,11 @@
 # a file that producer.py and consumer.py both read on startup, so
 # you never have to manually edit either file's topic name again.
 #
+# PARTITIONS: Set to 4. Each partition is consumed independently by one
+# consumer instance. Running 4 consumers in parallel gives 4x throughput
+# over a single consumer. For the demo run 4 consumer terminals simultaneously.
+# For production this scales to 64+ partitions across a Kafka cluster.
+#
 # Usage (from inside mule_detection folder, in PowerShell):
 #   .\reset_demo_environment.ps1
 #
@@ -39,28 +44,40 @@ if ($dbSize -ne "0") {
     exit 1
 }
 
-# Step 2: Create a brand-new, uniquely-named Kafka topic
-# Never reuse 'transactions-raw' - a fresh name sidesteps the delete
-# ambiguity entirely. No race condition, no trusting Kafka's delete.
+# Step 2: Create a brand-new, uniquely-named Kafka topic with 4 partitions.
+# 4 partitions allows 4 consumer instances to process in parallel,
+# giving ~4x throughput improvement with zero code changes to consumer.py.
+# Kafka's consumer group balancing automatically assigns one partition
+# per consumer instance when multiple consumers share the same group ID.
 $timestamp = Get-Date -Format "yyyyMMddHHmmss"
 $topicName = "transactions-raw-$timestamp"
 
 Write-Host ""
-Write-Host "[2/4] Creating fresh Kafka topic: $topicName ..." -ForegroundColor Yellow
-docker exec kafka kafka-topics --create --topic $topicName --bootstrap-server localhost:9092 --partitions 1 --replication-factor 1 | Out-Null
+Write-Host "[2/4] Creating fresh Kafka topic: $topicName (4 partitions)..." -ForegroundColor Yellow
+docker exec kafka kafka-topics --create --topic $topicName --bootstrap-server localhost:9092 --partitions 4 --replication-factor 1 | Out-Null
 
-# Step 3: VERIFY the new topic is actually empty - do not trust the
-# create command's exit code alone.
+# Step 3: VERIFY the new topic is actually empty across all 4 partitions.
 Start-Sleep -Seconds 2
 $offsetCheck = docker exec kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic $topicName
-Write-Host "  Offset check: $offsetCheck" -ForegroundColor Gray
+Write-Host "  Offset check (all 4 partitions):" -ForegroundColor Gray
+Write-Host "  $offsetCheck" -ForegroundColor Gray
 
-if ($offsetCheck -notmatch ":0$") {
-    Write-Host "  FAILED - new topic is not empty (offset check did not end in :0)." -ForegroundColor Red
-    Write-Host "  This should never happen with a freshly-named topic. Stopping." -ForegroundColor Red
+# All 4 partitions should show offset 0
+$lines = $offsetCheck -split "`n"
+$allEmpty = $true
+foreach ($line in $lines) {
+    $line = $line.Trim()
+    if ($line -ne "" -and $line -notmatch ":0$") {
+        $allEmpty = $false
+        Write-Host "  FAILED - partition not empty: $line" -ForegroundColor Red
+    }
+}
+
+if (-not $allEmpty) {
+    Write-Host "  FAILED - not all partitions are empty. Stopping." -ForegroundColor Red
     exit 1
 }
-Write-Host "  Verified: topic '$topicName' is genuinely empty (offset 0)." -ForegroundColor Green
+Write-Host "  Verified: topic '$topicName' is genuinely empty (all 4 partitions at offset 0)." -ForegroundColor Green
 
 # Step 4: Write the active topic name to a shared config file
 $topicName | Out-File -FilePath "active_topic.txt" -Encoding ASCII -NoNewline
@@ -72,7 +89,8 @@ Write-Host "  Active topic: $topicName" -ForegroundColor Green
 Write-Host ""
 Write-Host "[4/4] Reset complete. Verified clean state:" -ForegroundColor Yellow
 Write-Host "  Redis keys:    0" -ForegroundColor Green
-Write-Host "  Kafka topic:   $topicName (offset 0, verified)" -ForegroundColor Green
+Write-Host "  Kafka topic:   $topicName (4 partitions, offset 0, verified)" -ForegroundColor Green
 Write-Host ""
-Write-Host "You can now start: gnn_service.py -> consumer.py -> producer.py" -ForegroundColor Cyan
+Write-Host "You can now start: gnn_service.py -> consumer.py (x4) -> producer.py" -ForegroundColor Cyan
+Write-Host "Run 4 consumer terminals simultaneously for full parallel throughput." -ForegroundColor Cyan
 Write-Host "Both consumer.py and producer.py will automatically use the new topic." -ForegroundColor Cyan

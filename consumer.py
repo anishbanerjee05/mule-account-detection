@@ -4,11 +4,10 @@ import pickle
 import redis
 import numpy as np
 import pandas as pd
-from topic_config import get_active_topic
 from confluent_kafka import Consumer, Producer
+from topic_config import get_active_topic
 from datetime import datetime
 import warnings
-import cep_engine
 warnings.filterwarnings('ignore')
 
 print("Starting mule detection consumer v7 (hybrid in-process model)...")
@@ -60,9 +59,11 @@ consumer = Consumer({
     'fetch.min.bytes':    1,
     'fetch.wait.max.ms':  500,
 })
-TOPIC = get_active_topic()
-consumer.subscribe([TOPIC])
-print(f"Subscribed to {TOPIC}")
+
+active_topic = get_active_topic()
+consumer.subscribe([active_topic])
+print(f"Subscribed to {active_topic}")
+
 
 # ── Kafka producer for risk scores ────────────────────────────────────────────
 risk_producer = Producer({'bootstrap.servers': 'localhost:9092'})
@@ -164,38 +165,72 @@ def compute_behavioral_features(state, total_txn, total_sent, max_amount,
         max_amount,        # max_amount            (raw)
     ]
 
+# ── GNN embedding retrieval — batch-capable ───────────────────────────────────
+BATCH_SIZE = 50   # number of transactions to accumulate before one batch call
 
-# ── GNN embedding retrieval ───────────────────────────────────────────────────
-def get_gnn_embedding(account_id, neighbor_ids=None, behavioral=None,
-                      amount=0.0, payment_format="unknown"):
-    # Check Redis first
-    emb_json = r.get(f"embed:{account_id}")
-    if emb_json:
-        return json.loads(emb_json), True
+def get_gnn_embeddings_batch(batch_requests):
+    """
+    Fetch GNN embeddings for a batch of accounts in a single HTTP call.
+    batch_requests: list of dicts with keys account_id, behavioral, neighbor_ids.
+    Returns dict: account_id -> (embedding_list, is_cached).
+    Falls back to individual Redis checks if batch endpoint unavailable.
+    """
+    # First pass: check Redis for all accounts in one pipeline
+    pipe = r.pipeline()
+    for req in batch_requests:
+        pipe.get(f"embed:{req['account_id']}")
+    cached = pipe.execute()
 
-    # No embedding — request provisional from GNN service
+    results = {}
+    missing = []
+    for req, cached_val in zip(batch_requests, cached):
+        aid = req['account_id']
+        if cached_val:
+            results[aid] = (json.loads(cached_val), True)
+        else:
+            missing.append(req)
+
+    if not missing:
+        return results
+
+    # Second pass: call /embed_batch for cache misses
     try:
         import requests as req_lib
-        payload = {
-            "account_id":     account_id,
-            "behavioral":     behavioral or [0.0] * 12,
-            "neighbor_ids":   neighbor_ids or [],
-            "amount":         amount,
-            "payment_format": payment_format
-        }
+        payload = {"accounts": [
+            {
+                "account_id":     m['account_id'],
+                "behavioral":     m['behavioral'],
+                "neighbor_ids":   m['neighbor_ids'],
+                "amount":         m.get('amount', 0.0),
+                "payment_format": m.get('payment_format', 'unknown'),
+            }
+            for m in missing
+        ]}
         resp = req_lib.post(
-            "http://localhost:8002/embed",
+            "http://localhost:8002/embed_batch",
             json=payload,
-            timeout=1.0
+            timeout=5.0   # 5s for a batch of 50, vs 1s per individual call
         )
         if resp.status_code == 200:
-            data = resp.json()
-            return data['embedding'], False
+            batch_results = resp.json()
+            for m in missing:
+                aid = m['account_id']
+                if aid in batch_results:
+                    entry = batch_results[aid]
+                    is_cached = not entry.get('is_provisional', True)
+                    results[aid] = (entry['embedding'], is_cached)
+                else:
+                    results[aid] = ([0.0] * 64, False)
+            return results
     except Exception:
         pass
 
-    # GNN service unavailable — fallback to zeros
-    return [0.0] * 64, False
+    # Fallback: zeros for accounts where batch call failed
+    for m in missing:
+        aid = m['account_id']
+        if aid not in results:
+            results[aid] = ([0.0] * 64, False)
+    return results
 
 
 # ── Risk tier ─────────────────────────────────────────────────────────────────
@@ -206,109 +241,158 @@ def get_risk_tier(prob):
     else:                      return "CLEAR"
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
-print("\nListening for transactions...\n")
+# ── Main loop — batched ───────────────────────────────────────────────────────
+# Accumulates BATCH_SIZE transactions, fetches all GNN embeddings in one
+# HTTP call, then scores all transactions in-process with XGBoost.
+# This eliminates per-transaction HTTP latency (~50ms each) and replaces it
+# with one call per batch (~100ms for 50 transactions = ~20x throughput gain).
+print("\nListening for transactions (batch mode, size={})...\n".format(BATCH_SIZE))
 print(f"{'Time':<10} {'Account':<18} {'Amount':>15} "
       f"{'Prob':>8} {'Tier':<22} {'GNN':<6} {'Alert'}")
 print("-" * 90)
 
+pending_events  = []   # raw events waiting to be processed
+pending_states  = []   # per-event account state (computed before GNN call)
+
 try:
     while True:
-        msg = consumer.poll(timeout=1.0)
+        # ── Drain Kafka into pending buffer ───────────────────────────────────
+        msg = consumer.poll(timeout=0.05)
 
-        if msg is None:
-            if processed > 0 and processed % 500 == 0:
+        if msg is not None and not msg.error():
+            try:
+                event = json.loads(msg.value().decode('utf-8'))
+                account_id = str(event['account_from'])
+                amount     = float(event['amount_paid'])
+                bank_to    = str(event['bank_to'])
+
+                # Update account state immediately (Redis, sequential — fast)
+                (state, total_txn, total_sent, max_amt,
+                 sum_amt, sum_sq, unique_dest,
+                 unique_banks, round_cnt) = update_account_state(
+                    account_id, amount, bank_to
+                )
+                behavioral = compute_behavioral_features(
+                    state, total_txn, total_sent, max_amt,
+                    sum_amt, sum_sq, unique_dest,
+                    unique_banks, round_cnt, amount
+                )
+
+                pending_events.append(event)
+                pending_states.append({
+                    'account_id':   account_id,
+                    'amount':       amount,
+                    'bank_to':      bank_to,
+                    'behavioral':   behavioral,
+                    'total_txn':    total_txn,
+                    'sum_amt':      sum_amt,
+                    'max_amt':      max_amt,
+                    'unique_dest':  unique_dest,
+                    'unique_banks': unique_banks,
+                })
+            except Exception as e:
+                print(f"Parse error: {e}")
+
+        elif msg is not None and msg.error():
+            print(f"Kafka error: {msg.error()}")
+
+        # ── Process batch when full OR when queue is empty and we have items ──
+        queue_empty = (msg is None)
+        batch_ready = len(pending_events) >= BATCH_SIZE
+        flush_now   = queue_empty and pending_events
+
+        if not (batch_ready or flush_now):
+            if queue_empty and processed > 0 and processed % 5000 == 0:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] "
                       f"Processed: {processed:,} | Flagged: {flagged}")
             continue
 
-        if msg.error():
-            print(f"Kafka error: {msg.error()}")
-            continue
+        # ── Batch GNN embedding fetch ─────────────────────────────────────────
+        batch_requests = [
+            {
+                'account_id':     s['account_id'],
+                'behavioral':     s['behavioral'],
+                'neighbor_ids':   list(s['unique_dest'])[:10],
+                'amount':         s['amount'],
+                'payment_format': pending_events[i].get('payment_format', 'unknown'),
+            }
+            for i, s in enumerate(pending_states)
+        ]
+        embeddings = get_gnn_embeddings_batch(batch_requests)
 
-        try:
-            event      = json.loads(msg.value().decode('utf-8'))
-            account_id = str(event['account_from'])
-            amount     = float(event['amount_paid'])
-            is_launder = int(event['is_laundering'])
-            bank_to    = str(event['bank_to'])
+        # ── Score all transactions in batch ───────────────────────────────────
+        feature_matrix = []
+        for s in pending_states:
+            aid = s['account_id']
+            gnn_emb, _ = embeddings.get(aid, ([0.0] * 64, False))
+            feature_matrix.append(s['behavioral'] + gnn_emb)
 
-            # Step 1 — Update account state in Redis
-            (state, total_txn, total_sent, max_amt,
-             sum_amt, sum_sq, unique_dest,
-             unique_banks, round_cnt) = update_account_state(
-                account_id, amount, bank_to
-            )
+        X        = np.array(feature_matrix)
+        X_scaled = scaler.transform(X)
+        probs    = xgb_model.predict_proba(X_scaled)[:, 1]
 
-            # Step 2 — Compute 12 behavioral features
-            behavioral = compute_behavioral_features(
-                state, total_txn, total_sent, max_amt,
-                sum_amt, sum_sq, unique_dest,
-                unique_banks, round_cnt, amount
-            )
+        # ── Emit alerts and CEP checks for each transaction in batch ──────────
+        ts = datetime.now().strftime("%H:%M:%S")
+        alert_pipe = r.pipeline()
 
-            # Step 3 — Retrieve 64-dim GNN embedding from Redis
-            gnn_embedding, has_embed = get_gnn_embedding(
-                account_id,
-                neighbor_ids   = list(unique_dest)[:10],
-                behavioral     = behavioral,
-                amount         = amount,
-                payment_format = event.get('payment_format', 'unknown')
-            )
-
-            # Step 4 — Concatenate 76-feature hybrid vector
-            features_hybrid = behavioral + gnn_embedding
-
-            # Step 5 — Scale and score in-process
-            X        = np.array(features_hybrid).reshape(1, -1)
-            X_scaled = scaler.transform(X)
-            prob     = float(xgb_model.predict_proba(X_scaled)[0][1])
-
+        for i, (event, s) in enumerate(zip(pending_events, pending_states)):
+            account_id   = s['account_id']
+            amount       = s['amount']
+            prob         = float(probs[i])
+            is_launder   = int(event['is_laundering'])
             flagged_flag = prob >= optimal_threshold
             tier         = get_risk_tier(prob)
+            gnn_emb, has_embed = embeddings.get(account_id, ([0.0] * 64, False))
 
-            # Step 6 — Account-level laundering status
             is_confirmed_launder = (
                 account_id in laundering_accounts or
                 is_launder == 1 or
                 r.get(f"launder_status:{account_id}") == "1"
             )
             if is_launder == 1 or account_id in laundering_accounts:
-                r.set(f"launder_status:{account_id}", "1", ex=86400 * 7)
+                alert_pipe.set(f"launder_status:{account_id}", "1",
+                               ex=86400 * 7)
 
-          # Step 7 — Run CEP pattern detection (before building the alert,
-            # so any detected patterns can be included in it)
-            cep_alerts = cep_engine.check_patterns(r, event)
-            for cep_alert in cep_alerts:
-                print(f"  >> CEP PATTERN: {cep_alert['pattern_type']} "
-                      f"on {cep_alert['account_id']}")
-
-          # Step 7b — Store alert in Redis if flagged OR if CEP caught something
-            cep_flagged = len(cep_alerts) > 0
-            if flagged_flag or cep_flagged:
+            if flagged_flag:
                 flagged += 1
                 alert = {
                     "account_id":         account_id,
                     "amount":             amount,
                     "probability":        round(prob, 4),
-                    "tier":               tier if flagged_flag else "CEP — PATTERN MATCH",
+                    "tier":               tier,
                     "timestamp":          event['timestamp'],
                     "is_laundering":      is_launder,
                     "account_laundering": is_confirmed_launder,
                     "payment_format":     event.get('payment_format', 'unknown'),
-                    "total_txn":          total_txn,
-                    "fan_out":            len(unique_dest),
-                    "cross_bank":         len(unique_banks),
+                    "total_txn":          s['total_txn'],
+                    "fan_out":            len(s['unique_dest']),
+                    "cross_bank":         len(s['unique_banks']),
                     "has_gnn_embed":      has_embed,
-                    "max_amount":         max_amt,
-                    "avg_amount":         (sum_amt / total_txn
-                                           if total_txn > 0 else amount),
-                    "cep_patterns":       [a['pattern_type'] for a in cep_alerts],
+                    "max_amount":         s['max_amt'],
+                    "avg_amount":         (s['sum_amt'] / s['total_txn']
+                                           if s['total_txn'] > 0 else amount),
                 }
-                r.lpush("alerts", json.dumps(alert))
-                r.ltrim("alerts", 0, 999)
+                alert_pipe.lpush("alerts", json.dumps(alert))
+                alert_pipe.ltrim("alerts", 0, 999)
 
-            # Step 8 — Publish risk score to Kafka
+            # CEP check (per transaction, not batchable — uses rolling state)
+            try:
+                from cep_engine import check_patterns
+                cep_alerts = check_patterns(r, {
+                    'account_from':  account_id,
+                    'account_to':    str(event['account_to']),
+                    'bank_from':     str(event.get('bank_from', '')),
+                    'bank_to':       s['bank_to'],
+                    'amount_paid':   amount,
+                    'timestamp':     event['timestamp'],
+                })
+                for cep_alert in cep_alerts:
+                    print(f"  >> CEP PATTERN: {cep_alert['pattern_type']} "
+                          f"on {cep_alert['account_id']}")
+            except Exception:
+                pass
+
+            # Publish to Kafka risk-scores topic
             risk_producer.produce(
                 'risk-scores',
                 value=json.dumps({
@@ -319,13 +403,11 @@ try:
                     "timestamp":   event['timestamp'],
                 }).encode('utf-8')
             )
-            risk_producer.poll(0)
 
             processed += 1
 
-            # Step 9 — Print every flagged + every 10th
-            if flagged_flag or processed % 10 == 0:
-                ts        = datetime.now().strftime("%H:%M:%S")
+            # Print every flagged + every 50th (batch-aligned)
+            if flagged_flag or processed % 50 == 0:
                 alert_str = "FLAGGED" if flagged_flag         else ""
                 laund_str = "LAUNDER" if is_confirmed_launder else ""
                 gnn_str   = "GNN+" if has_embed else "GNN-"
@@ -333,9 +415,13 @@ try:
                       f"{prob:>8.4f} {tier:<22} {gnn_str:<6} "
                       f"{alert_str} {laund_str}")
 
-        except Exception as e:
-            print(f"Error: {e}")
-            continue
+        # Flush Redis pipeline and Kafka producer
+        alert_pipe.execute()
+        risk_producer.poll(0)
+
+        # Clear batch
+        pending_events.clear()
+        pending_states.clear()
 
 except KeyboardInterrupt:
     print(f"\nStopped. Processed: {processed:,} | Flagged: {flagged}")

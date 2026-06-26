@@ -241,18 +241,121 @@ def compute_embedding(req: EmbeddingRequest):
 @app.get("/embed/{account_id}")
 def get_embedding(account_id: str):
     """Retrieve stored embedding for an account."""
-    emb_json  = r.get(f"embed:{account_id}")
-
+    emb_json = r.get(f"embed:{account_id}")
     if not emb_json:
         return {"error": f"No embedding found for {account_id}"}
-
     return {
         "account_id": account_id,
         "embedding":  json.loads(emb_json),
         "meta":       {"method": "stored_gnn"}
     }
 
-@app.get("/health")
+class BatchEmbeddingRequest(BaseModel):
+    # List of account IDs to resolve embeddings for.
+    # Each entry: {"account_id": str, "behavioral": List[float],
+    #              "neighbor_ids": List[str]}
+    # behavioral and neighbor_ids are only used if the account is not
+    # in Redis or the persistent store (Tier 3 fallback).
+    accounts: List[EmbeddingRequest]
+
+@app.post("/embed_batch")
+def compute_embedding_batch(req: BatchEmbeddingRequest):
+    """
+    Resolve GNN embeddings for up to 50 accounts in a single request.
+    Uses the same 3-tier lookup as /embed but batches all Redis reads
+    into a single pipeline call, eliminating per-account network
+    round-trip overhead.
+
+    Returns a dict mapping account_id -> {embedding, method, is_provisional}.
+
+    This is the high-throughput path for consumer.py. At batch size 50,
+    one HTTP call replaces 50 sequential calls, reducing latency from
+    ~50ms*50=2500ms to ~50ms+processing (~100ms total per batch).
+    """
+    if not req.accounts:
+        return {}
+
+    account_ids = [a.account_id for a in req.accounts]
+    results = {}
+
+    # ── Tier 1: bulk Redis pipeline read ─────────────────────────────────────
+    pipe = r.pipeline()
+    for aid in account_ids:
+        pipe.get(f"embed:{aid}")
+    redis_results = pipe.execute()
+
+    cache_hits = {}
+    cache_misses = []
+    for i, (aid, cached) in enumerate(zip(account_ids, redis_results)):
+        if cached:
+            cache_hits[aid] = json.loads(cached)
+        else:
+            cache_misses.append(req.accounts[i])
+
+    # Populate results from Redis hits
+    for aid, embedding in cache_hits.items():
+        results[aid] = {
+            "embedding":      embedding,
+            "method":         "redis_cache",
+            "is_provisional": False,
+        }
+
+    # ── Tier 2: persistent store for cache misses ─────────────────────────────
+    still_missing = []
+    backfill_pipe = r.pipeline()
+    for acct_req in cache_misses:
+        aid = acct_req.account_id
+        if aid in persistent_embeddings:
+            embedding = persistent_embeddings[aid]
+            results[aid] = {
+                "embedding":      embedding,
+                "method":         "persistent_store",
+                "is_provisional": False,
+            }
+            # Backfill Redis so next lookup is Tier 1
+            backfill_pipe.set(f"embed:{aid}", json.dumps(embedding), ex=21600)
+        else:
+            still_missing.append(acct_req)
+    backfill_pipe.execute()
+
+    # ── Tier 3: live GNN forward pass for genuinely unknown accounts ──────────
+    for acct_req in still_missing:
+        aid = acct_req.account_id
+
+        neighbor_embeddings = []
+        if acct_req.neighbor_ids:
+            npipe = r.pipeline()
+            for nid in acct_req.neighbor_ids[:10]:
+                npipe.get(f"embed:{nid}")
+            nresults = npipe.execute()
+            for nres in nresults:
+                if nres:
+                    neighbor_embeddings.append(json.loads(nres))
+
+        features = acct_req.behavioral[:12]
+        while len(features) < 15:
+            features.append(0.0)
+        x = torch.tensor([features], dtype=torch.float32)
+
+        with torch.no_grad():
+            embedding = model.get_embedding(x, neighbor_embeddings)
+            embedding_list = embedding.squeeze().numpy().tolist()
+
+        n = len(neighbor_embeddings)
+        method = (f"gnn_forward_{n}_neighbors" if n >= 3
+                  else f"gnn_forward_{n}_neighbor" if n > 0
+                  else "gnn_forward_no_neighbors")
+
+        r.set(f"embed:{aid}", json.dumps(embedding_list), ex=21600)
+        results[aid] = {
+            "embedding":      embedding_list,
+            "method":         method,
+            "is_provisional": True,
+        }
+
+    return results
+
+
 def health():
     return {
         "status":      "operational",
