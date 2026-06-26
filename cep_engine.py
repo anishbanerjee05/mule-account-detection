@@ -237,23 +237,45 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
 
     # ── Pattern 5 — SIMPLE_CYCLE ──────────────────────────────────────────────
     # A sends to B, B sends to C, C sends back to A -- same calendar day.
-    # Detect when account_from appears as a destination in account_to's
-    # recent outbound window (i.e. account_to has sent back to account_from).
-    to_window = _get_window(r, account_to)
-    cutoff_day = now - timedelta(hours=SIMPLE_CYCLE_WINDOW_HOURS)
-    cycle_found = any(
-        w['dest_account'] == account_from
-        and _parse_ts(w['timestamp']) >= cutoff_day
-        for w in to_window
-    )
-    if cycle_found and not _on_cooldown(r, account_from, "SIMPLE_CYCLE"):
-        alert = _push_alert(r, account_from, "SIMPLE_CYCLE", timestamp, {
-            "cycle_accounts": [account_from, account_to],
-            "window_hours":   SIMPLE_CYCLE_WINDOW_HOURS,
-        })
-        detected.append(alert)
-        _start_cooldown(r, account_from, "SIMPLE_CYCLE",
-                        SIMPLE_CYCLE_COOLDOWN_HOURS)
+    # The current transaction is A->B. We need to find:
+    #   1. B has sent to some C (C != A) today
+    #   2. C has sent back to A today
+    # This requires checking B's outbound window for intermediate accounts C,
+    # then checking each C's outbound window for a send back to A.
+    # To avoid excessive Redis reads, limit C candidates to 10.
+    if not _on_cooldown(r, account_from, "SIMPLE_CYCLE"):
+        to_window = _get_window(r, account_to)
+        cutoff_day = now - timedelta(hours=SIMPLE_CYCLE_WINDOW_HOURS)
+
+        # Find all C accounts that B (account_to) sent to today, excluding A
+        c_candidates = set()
+        for w in to_window:
+            if (_parse_ts(w['timestamp']) >= cutoff_day
+                    and w['dest_account'] != account_from):
+                c_candidates.add(w['dest_account'])
+                if len(c_candidates) >= 10:
+                    break
+
+        # Check if any C sent back to A today
+        cycle_found = False
+        cycle_via = None
+        for c_account in c_candidates:
+            c_window = _get_window(r, c_account)
+            if any(w['dest_account'] == account_from
+                   and _parse_ts(w['timestamp']) >= cutoff_day
+                   for w in c_window):
+                cycle_found = True
+                cycle_via = c_account
+                break
+
+        if cycle_found:
+            alert = _push_alert(r, account_from, "SIMPLE_CYCLE", timestamp, {
+                "cycle_path":   [account_from, account_to, cycle_via, account_from],
+                "window_hours": SIMPLE_CYCLE_WINDOW_HOURS,
+            })
+            detected.append(alert)
+            _start_cooldown(r, account_from, "SIMPLE_CYCLE",
+                            SIMPLE_CYCLE_COOLDOWN_HOURS)
 
     # ── Pattern 6 — STRUCTURING ───────────────────────────────────────────────
     # 3+ transactions in the same day with amounts just below common
