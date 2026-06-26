@@ -5,7 +5,6 @@ import redis
 import numpy as np
 import pandas as pd
 from confluent_kafka import Consumer, Producer
-from topic_config import get_active_topic
 from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
@@ -59,10 +58,6 @@ consumer = Consumer({
     'fetch.min.bytes':    1,
     'fetch.wait.max.ms':  500,
 })
-
-active_topic = get_active_topic()
-consumer.subscribe([active_topic])
-print(f"Subscribed to {active_topic}")
 
 
 # ── Kafka producer for risk scores ────────────────────────────────────────────
@@ -165,8 +160,11 @@ def compute_behavioral_features(state, total_txn, total_sent, max_amount,
         max_amount,        # max_amount            (raw)
     ]
 
+
+from topic_config import get_active_topic
+
 # ── GNN embedding retrieval — batch-capable ───────────────────────────────────
-BATCH_SIZE = 50   # number of transactions to accumulate before one batch call
+BATCH_SIZE = 100  # number of transactions to accumulate before one batch call
 
 def get_gnn_embeddings_batch(batch_requests):
     """
@@ -240,6 +238,11 @@ def get_risk_tier(prob):
     elif prob >= L1_THRESHOLD: return "L1 — REVIEW"
     else:                      return "CLEAR"
 
+
+# ── Subscribe to active Kafka topic ──────────────────────────────────────────
+active_topic = get_active_topic()
+consumer.subscribe([active_topic])
+print(f"Subscribed to {active_topic}")
 
 # ── Main loop — batched ───────────────────────────────────────────────────────
 # Accumulates BATCH_SIZE transactions, fetches all GNN embeddings in one
@@ -407,7 +410,7 @@ try:
             processed += 1
 
             # Print every flagged + every 50th (batch-aligned)
-            if flagged_flag or processed % 50 == 0:
+            if flagged_flag or processed % 500 == 0:
                 alert_str = "FLAGGED" if flagged_flag         else ""
                 laund_str = "LAUNDER" if is_confirmed_launder else ""
                 gnn_str   = "GNN+" if has_embed else "GNN-"
