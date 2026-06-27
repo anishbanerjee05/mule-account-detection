@@ -259,7 +259,7 @@ L2_THRESHOLD = 0.50
 L1_THRESHOLD = 0.30
 
 # ── Data functions ────────────────────────────────────────────────────────────
-def get_alerts(n=200):
+def get_alerts(n=1000):
     raw    = r.lrange('alerts', 0, n - 1)
     alerts = []
     for item in raw:
@@ -269,14 +269,21 @@ def get_alerts(n=200):
             pass
     return alerts
 
+def get_total_flagged():
+    count = r.get("alerts_total_count")
+    return int(count) if count else None
+
 def get_stats(alerts):
-    total     = len(alerts)
+    real_total = get_total_flagged()
+    total     = real_total if real_total else len(alerts)
     l3        = sum(1 for a in alerts if 'L3' in a.get('tier', ''))
     l2        = sum(1 for a in alerts if 'L2' in a.get('tier', '') and 'L3' not in a.get('tier', ''))
     l1        = sum(1 for a in alerts if 'L1' in a.get('tier', '') and 'L2' not in a.get('tier', '') and 'L3' not in a.get('tier', ''))
-    confirmed = sum(1 for a in alerts if a.get('account_laundering') is True or a.get('is_laundering') == 1)
+    # Read confirmed count directly from Redis launder_status keys
+    # This gives real count across all processed transactions, not just queued alerts
+    confirmed = len(r.keys("launder_status:*"))
     gnn       = sum(1 for a in alerts if a.get('has_gnn_embed'))
-    gnn_pct   = int(gnn / total * 100) if total > 0 else 0
+    gnn_pct   = int(gnn / len(alerts) * 100) if len(alerts) > 0 else 0
     return total, l3, l2, l1, confirmed, gnn_pct
 
 def deduplicate_alerts(alerts):
@@ -332,7 +339,7 @@ with st.sidebar:
         st.markdown(f"- {reg}")
 
 # ── Fetch data ────────────────────────────────────────────────────────────────
-alerts                = get_alerts(200)
+alerts                = get_alerts(1000)
 total, l3, l2, l1, confirmed, gnn_pct = get_stats(alerts)
 deduped, counts       = deduplicate_alerts(alerts)
 
