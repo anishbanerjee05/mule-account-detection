@@ -90,12 +90,26 @@ def _welford_std(n: float, M2: float) -> float:
 def _z_score(value: float, mu: float, std: float) -> float:
     """
     Compute z-score: how many standard deviations is value from mean.
-    Returns 0.0 if std is too small (account behavior is perfectly consistent
-    or we have insufficient history).
+
+    When std is near zero (perfectly consistent history), we use a
+    ratio-based fallback: if value is significantly larger than mu,
+    that IS anomalous even without a finite std. We return a synthetic
+    z-score based on the ratio to make the detection work.
+
+    Example: mu=2 senders/day, std=0, today=20 senders.
+    Ratio = 20/2 = 10x. Synthetic z = 10 - 1 = 9. Clearly anomalous.
     """
-    if std < 1e-9:
+    if std >= 1e-9:
+        return (value - mu) / std
+    # std is near zero — perfectly consistent history
+    if mu < 1e-9:
+        # Mean is also zero — any nonzero value is infinitely anomalous
+        return 10.0 if value > 0 else 0.0
+    # Use ratio-based synthetic z-score
+    ratio = value / mu
+    if ratio <= 1.0:
         return 0.0
-    return (value - mu) / std
+    return ratio - 1.0  # e.g. 10x = z=9, 3x = z=2, 2x = z=1
 
 
 # ── Baseline read/write ───────────────────────────────────────────────────────
