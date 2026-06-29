@@ -376,7 +376,8 @@ try:
                                            if s['total_txn'] > 0 else amount),
                 }
                 alert_pipe.lpush("alerts", json.dumps(alert))
-                alert_pipe.ltrim("alerts", 0, 999)
+                alert_pipe.ltrim("alerts", 0, 4999)
+                alert_pipe.incr("alerts_total_count")
 
             # CEP check (per transaction, not batchable — uses rolling state)
             try:
@@ -394,6 +395,30 @@ try:
                           f"on {cep_alert['account_id']}")
             except Exception:
                 pass
+
+            # Write transaction edge to graph store for hop mapping
+            # This builds the inter-bank network that /hops/{account_id}
+            # in api.py traverses to show complete money flow chains.
+            ts_score  = datetime.now().timestamp()
+            edge_data = json.dumps({
+                "from":   account_id,
+                "to":     str(event.get('account_to', '')),
+                "bfrom":  str(event.get('bank_from', '')),
+                "bto":    s['bank_to'],
+                "amount": amount,
+                "ts":     event['timestamp'],
+                "fmt":    event.get('payment_format', 'unknown'),
+            })
+            alert_pipe.zadd(f"txn_out:{account_id}",
+                            {edge_data: ts_score})
+            alert_pipe.zremrangebyrank(f"txn_out:{account_id}", 0, -501)
+            alert_pipe.expire(f"txn_out:{account_id}", 86400 * 7)
+            acct_to = str(event.get('account_to', ''))
+            if acct_to:
+                alert_pipe.zadd(f"txn_in:{acct_to}",
+                                {edge_data: ts_score})
+                alert_pipe.zremrangebyrank(f"txn_in:{acct_to}", 0, -501)
+                alert_pipe.expire(f"txn_in:{acct_to}", 86400 * 7)
 
             # Publish to Kafka risk-scores topic
             risk_producer.produce(
