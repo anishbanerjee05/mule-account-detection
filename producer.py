@@ -13,7 +13,7 @@ print("Starting IBM AML transaction producer (confluent-kafka)...")
 TOPIC = get_active_topic()
 print(f"Target topic: {TOPIC}")
 
-# ── Demo time compression settings ─────────────────────────────────────────
+# -- Demo time compression settings -----------------------------------------
 # The IBM AML dataset's real timestamps span ~30 days. Replaying that at
 # real speed is obviously not viable for a live demo, but stamping every
 # event with datetime.now() (the old behaviour) destroys ALL time-gap
@@ -24,7 +24,7 @@ print(f"Target topic: {TOPIC}")
 # data, just compressed by a fixed ratio so the whole dataset's time span
 # plays out over DEMO_DURATION_MINUTES instead of 30 real days. A 30-day
 # gap and a 2-hour gap both shrink by the same factor, so their *shape*
-# relative to each other survives — the detection logic in cep_engine.py
+# relative to each other survives -- the detection logic in cep_engine.py
 # does not need to know or care that compression happened at all.
 DEMO_DURATION_MINUTES = 12  # total wall-clock runtime for a full replay
 
@@ -37,7 +37,7 @@ df_focus = df[df['Payment Format'].isin(
 print(f"Loaded {len(df_focus):,} transactions")
 print(f"Laundering transactions: {df_focus['Is Laundering'].sum():,}")
 
-# ── Parse real timestamps and sort chronologically ─────────────────────────
+# -- Parse real timestamps and sort chronologically -------------------------
 print("Parsing real timestamps and computing compression ratio...")
 df_focus['_real_ts'] = pd.to_datetime(df_focus['Timestamp'], format='%Y/%m/%d %H:%M')
 df_focus = df_focus.sort_values('_real_ts').reset_index(drop=True)
@@ -49,13 +49,13 @@ real_span_seconds = (real_end - real_start).total_seconds()
 demo_span_seconds = DEMO_DURATION_MINUTES * 60
 compression_ratio = demo_span_seconds / real_span_seconds if real_span_seconds > 0 else 1.0
 
-print(f"Real data span:    {real_start} → {real_end}  "
+print(f"Real data span:    {real_start} -> {real_end}  "
       f"({real_span_seconds / 86400:.1f} days)")
 print(f"Demo replay span:  {DEMO_DURATION_MINUTES} minutes")
-print(f"Compression ratio: 1 real second → {compression_ratio:.6f} demo seconds "
+print(f"Compression ratio: 1 real second -> {compression_ratio:.6f} demo seconds "
       f"(~{1/compression_ratio:.0f}x speedup)")
 
-# ── Precompute each event's demo-clock timestamp ────────────────────────────
+# -- Precompute each event's demo-clock timestamp ----------------------------
 # demo_offset = how far into the (compressed) demo this event's timestamp
 # falls, anchored to wall-clock "now" at producer startup. This preserves
 # relative gaps between ANY two events (same account or not) exactly,
@@ -116,7 +116,7 @@ for _, row in df_focus.iterrows():
               f"Demo-elapsed: {row['_demo_offset_seconds']:.1f}s")
 
     # Sleep just enough to pace delivery against the compressed demo clock,
-    # rather than a fixed 0.002s — this keeps wall-clock pacing roughly
+    # rather than a fixed 0.002s -- this keeps wall-clock pacing roughly
     # aligned with _demo_offset_seconds without blocking on huge gaps.
     offset_delta = row['_demo_offset_seconds'] - last_demo_offset
     sleep_for = min(max(offset_delta, 0.0), 0.05)  # cap per-event sleep
@@ -125,4 +125,20 @@ for _, row in df_focus.iterrows():
     last_demo_offset = row['_demo_offset_seconds']
 
 producer.flush()
+
+# Send an explicit end-of-stream marker as the final message. consumer.py
+# watches for this and exits cleanly on its own, instead of needing to
+# be manually Ctrl+C'd every time a run finishes -- and instead of being
+# left running for hours by accident (which is what caused the stale
+# Kafka backlog problem earlier).
+end_marker = {"event_type": "END_OF_STREAM", "total_sent": sent}
+producer.produce(
+    TOPIC,
+    key="__END_OF_STREAM__",
+    value=json.dumps(end_marker).encode('utf-8'),
+    callback=delivery_report
+)
+producer.flush()
+
 print(f"\nComplete. Total: {sent:,}, Laundering: {flagged}")
+print("End-of-stream marker sent -- consumer will stop automatically.")
