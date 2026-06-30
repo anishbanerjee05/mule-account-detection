@@ -20,3 +20,7 @@ scaler_hybrid.pkl
 active_topic.txt
 .vscode/
 embeddings_store.parquet
+
+logs/
+ram_log.txt
+producer_log.txt
