@@ -24,3 +24,6 @@ embeddings_store.parquet
 logs/
 ram_log.txt
 producer_log.txt
+
+monitor_ram_quick.ps1
+quick_redis_latency_test.py
