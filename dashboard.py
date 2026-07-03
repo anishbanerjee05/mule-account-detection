@@ -68,15 +68,17 @@ st.markdown("""
         color: #8A9BB0;
         text-align: right;
     }
+    /* Status dot now driven by actual data freshness, not hardcoded */
     .status-dot {
         display: inline-block;
         width: 7px;
         height: 7px;
         border-radius: 50%;
-        background: #2ECC71;
         margin-right: 5px;
-        animation: pulse 2s infinite;
     }
+    .status-dot.live  { background: #2ECC71; animation: pulse 2s infinite; }
+    .status-dot.warn  { background: #B7791F; animation: pulse 1.2s infinite; }
+    .status-dot.stale { background: #C0392B; animation: none; }
     @keyframes pulse {
         0%   { opacity: 1; }
         50%  { opacity: 0.4; }
@@ -120,6 +122,12 @@ st.markdown("""
         letter-spacing: 0.1em;
         margin-top: 0.35rem;
     }
+    .metric-caption {
+        font-size: 0.65rem;
+        color: #9AA7B5;
+        margin: -0.75rem 0 1rem 0;
+        font-style: italic;
+    }
 
     /* ── Section labels ── */
     .section-label {
@@ -147,6 +155,7 @@ st.markdown("""
     .badge-l2    { background: #B7791F; color: white; }
     .badge-l1    { background: #1E8449; color: white; }
     .badge-clear { background: #5D6D7E; color: white; }
+    .badge-cep   { background: #5B4B8A; color: white; white-space: nowrap; }
 
     /* ── Alert table ── */
     .alert-table {
@@ -279,8 +288,10 @@ def get_stats(alerts):
     l3        = sum(1 for a in alerts if 'L3' in a.get('tier', ''))
     l2        = sum(1 for a in alerts if 'L2' in a.get('tier', '') and 'L3' not in a.get('tier', ''))
     l1        = sum(1 for a in alerts if 'L1' in a.get('tier', '') and 'L2' not in a.get('tier', '') and 'L3' not in a.get('tier', ''))
-    # Read confirmed count directly from Redis launder_status keys
-    # This gives real count across all processed transactions, not just queued alerts
+    # NOTE: r.keys() is O(N) and blocks Redis. Left as-is deliberately --
+    # a partial SCAN would silently under-report this number in a live demo,
+    # which is worse than an accurate-but-slower one. Real fix: maintain an
+    # INCR counter in consumer.py when launder_status:{id} is first set.
     confirmed = len(r.keys("launder_status:*"))
     gnn       = sum(1 for a in alerts if a.get('has_gnn_embed'))
     gnn_pct   = int(gnn / len(alerts) * 100) if len(alerts) > 0 else 0
@@ -296,6 +307,42 @@ def deduplicate_alerts(alerts):
             seen[aid] = a
     return seen, counts
 
+def get_cep_badge_html(aid):
+    """Cheap O(1) lookup (lindex, not lrange) -- one Redis round-trip per row,
+    fetching only the newest CEP hit rather than the whole history."""
+    try:
+        raw = r.lindex(f"cep_alerts:{aid}", 0)
+        if not raw:
+            return "—"
+        pattern = json.loads(raw).get('pattern_type', '')
+        return f'<span class="badge badge-cep">{pattern}</span>' if pattern else "—"
+    except Exception:
+        return "—"
+
+def get_system_status(alerts):
+    """Derives live/warn/stale from the actual timestamp of the newest alert,
+    instead of a hardcoded green dot that lies if the pipeline stalls."""
+    if not alerts:
+        return "NO DATA", "stale"
+    try:
+        latest_ts = alerts[0].get('timestamp', '')
+        latest_dt = datetime.fromisoformat(latest_ts.replace('Z', ''))
+        age_seconds = (datetime.now() - latest_dt).total_seconds()
+    except Exception:
+        return "UNKNOWN", "stale"
+    if age_seconds < 30:
+        return "LIVE", "live"
+    elif age_seconds < 120:
+        return "SLOWING", "warn"
+    else:
+        return "STALE", "stale"
+
+# ── Fetch data (moved above header so the status dot can use it) ──────────────
+alerts                = get_alerts(1000)
+total, l3, l2, l1, confirmed, gnn_pct = get_stats(alerts)
+deduped, counts       = deduplicate_alerts(alerts)
+status_label, status_cls = get_system_status(alerts)
+
 # ── Header ────────────────────────────────────────────────────────────────────
 now = datetime.now().strftime('%Y-%m-%d  %H:%M:%S')
 st.markdown(f"""
@@ -307,7 +354,7 @@ st.markdown(f"""
         PMLA 2002 &nbsp;/&nbsp; RBI FREE-AI 2025</p>
     </div>
     <div class="sys-header-right">
-        <span class="status-dot"></span>Live &nbsp;&nbsp; {now}
+        <span class="status-dot {status_cls}"></span>{status_label} &nbsp;&nbsp; {now}
     </div>
 </div>
 """, unsafe_allow_html=True)
@@ -338,11 +385,6 @@ with st.sidebar:
                 "RBI FREE-AI Aug 2025"]:
         st.markdown(f"- {reg}")
 
-# ── Fetch data ────────────────────────────────────────────────────────────────
-alerts                = get_alerts(1000)
-total, l3, l2, l1, confirmed, gnn_pct = get_stats(alerts)
-deduped, counts       = deduplicate_alerts(alerts)
-
 # ── Metric cards ──────────────────────────────────────────────────────────────
 c1, c2, c3, c4, c5, c6 = st.columns(6)
 
@@ -353,14 +395,19 @@ def metric_card(col, value, label, style="neutral"):
         <div class="metric-label">{label}</div>
     </div>""", unsafe_allow_html=True)
 
-metric_card(c1, total,     "Total Alerts",          "info")
+metric_card(c1, total,     "Total Flagged (All-Time)", "info")
 metric_card(c2, l3,        "L3 Auto-Freeze",         "danger")
 metric_card(c3, l2,        "L2 Soft Hold",           "warning")
 metric_card(c4, l1,        "L1 Review",              "safe")
 metric_card(c5, confirmed, "Confirmed Laundering",   "danger")
 metric_card(c6, f"{gnn_pct}%", "GNN-Assisted",       "neutral")
 
-st.markdown("<br>", unsafe_allow_html=True)
+st.markdown(
+    "<div class='metric-caption'>L1/L2/L3 reflect the current alert queue "
+    f"(last {len(alerts)} entries); Total Flagged is an all-time counter — "
+    "the two are not expected to sum.</div>",
+    unsafe_allow_html=True
+)
 
 # ── Main layout ───────────────────────────────────────────────────────────────
 left, right = st.columns([3, 2])
@@ -394,6 +441,7 @@ with left:
             txn   = a.get('total_txn', '-')
             gnn   = 'Yes' if a.get('has_gnn_embed') else 'No'
             conf  = a.get('account_laundering', False) or a.get('is_laundering', 0) == 1
+            cep_badge = get_cep_badge_html(aid)
 
             if 'L3' in tier:
                 badge   = '<span class="badge badge-l3">L3</span>'
@@ -420,6 +468,7 @@ with left:
                 <td style="text-align:right">{a.get('amount',0):,.0f}</td>
                 <td style="text-align:right"><strong>{prob:.4f}</strong></td>
                 <td>{badge}</td>
+                <td>{cep_badge}</td>
                 <td style="text-align:right">{cnt}</td>
                 <td style="text-align:right">{txn}</td>
                 <td style="text-align:right">{fan}</td>
@@ -437,6 +486,7 @@ with left:
                     <th style="text-align:right">Amount (Rs.)</th>
                     <th style="text-align:right">Score</th>
                     <th>Tier</th>
+                    <th>Pattern</th>
                     <th style="text-align:right">Alerts</th>
                     <th style="text-align:right">Txn</th>
                     <th style="text-align:right">Fan-Out</th>
@@ -712,7 +762,11 @@ Intern:        Anish Banerjee - B.Tech CSE, DBS Global University
 
                 X         = np.array(features).reshape(1, -1)
                 X_scaled  = scaler.transform(X)
-                shap_vals = explainer.shap_values(X_scaled)[0][:12]
+                # Computed once and sliced -- previously called twice
+                # (once for the behavioral bars, once for the GNN %),
+                # doubling SHAP compute cost per account selection for no reason.
+                shap_row  = explainer.shap_values(X_scaled)[0]
+                shap_vals = shap_row[:12]
 
                 sorted_idx = np.argsort(np.abs(shap_vals))[::-1][:8]
                 vals       = shap_vals[sorted_idx]
@@ -737,8 +791,8 @@ Intern:        Anish Banerjee - B.Tech CSE, DBS Global University
                 st.pyplot(fig3)
                 plt.close()
 
-                # GNN contribution summary
-                gnn_shap_sum = float(np.sum(np.abs(explainer.shap_values(X_scaled)[0][12:])))
+                # GNN contribution summary (reuses shap_row, no second call)
+                gnn_shap_sum = float(np.sum(np.abs(shap_row[12:])))
                 beh_shap_sum = float(np.sum(np.abs(shap_vals)))
                 total_shap   = gnn_shap_sum + beh_shap_sum
                 if total_shap > 0:
