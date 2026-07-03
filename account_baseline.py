@@ -102,10 +102,19 @@ def _z_score(value: float, mu: float, std: float) -> float:
     if std >= 1e-9:
         return (value - mu) / std
     # std is near zero — perfectly consistent history
+    # std is near zero — perfectly consistent history
     if mu < 1e-9:
         # Mean is also zero — any nonzero value is infinitely anomalous
         return 10.0 if value > 0 else 0.0
     # Use ratio-based synthetic z-score
+    # KNOWN ISSUE (found 2026-07-02): this is not a real z-score and can
+    # produce statistically nonsensical values (e.g. "90 standard
+    # deviations") when an account's baseline has near-zero variance --
+    # observed on smoke test seed data with identical daily amounts.
+    # Before this feeds any regulator-facing output (STR text, MoF
+    # demo), either cap this at a defensible ceiling or change
+    # downstream interpretation strings to say "ratio-based estimate"
+    # instead of "standard deviations" when this fallback fires.
     ratio = value / mu
     if ratio <= 1.0:
         return 0.0
@@ -206,16 +215,23 @@ def get_today_stats(r: redis.Redis, account_id: str, day: str) -> dict:
     }
 
 
-def rollover_daily_baseline(r: redis.Redis, account_id: str, day: str):
+def rollover_daily_baseline(r: redis.Redis, account_id: str, day: str,
+                             last_day: Optional[str] = None):
     """
     Called once per day (when the date changes) to push yesterday's
     daily stats into the Welford baseline accumulators.
 
     This is called lazily — when we see a transaction on a new day,
     we check if yesterday's data has been rolled over and do so if not.
+
+    last_day: if the caller already fetched the baseline hash (e.g. via
+    compute_anomaly_scores' hgetall), pass its 'last_updated_day' value
+    here to avoid a redundant Redis read. If None, this function reads
+    it itself -- unchanged behavior for any other caller.
     """
     baseline_key = f"acct_baseline:{account_id}"
-    last_day = r.hget(baseline_key, "last_updated_day")
+    if last_day is None:
+        last_day = r.hget(baseline_key, "last_updated_day")
 
     if last_day == day:
         return  # Already rolled over today
@@ -260,13 +276,23 @@ def compute_anomaly_scores(r: redis.Redis, account_id: str,
     z >= 3.0 means the value is statistically anomalous for this account.
     z < 2.0 means the value is within normal range for this account.
     """
-    # Roll over yesterday's data into baseline if needed
-    rollover_daily_baseline(r, account_id, day)
-
-    # Get today's stats and baseline
-    today = get_today_stats(r, account_id, day)
+    # Read baseline once, reuse for both the rollover check and the
+    # z-score computation below -- was 2 separate reads of the same
+    # key (hget + hgetall), now 1 hgetall serves both purposes.
     baseline_key = f"acct_baseline:{account_id}"
     raw = r.hgetall(baseline_key)
+    last_day = raw.get("last_updated_day")
+
+    # Roll over yesterday's data into baseline if needed
+    rollover_daily_baseline(r, account_id, day, last_day=last_day)
+
+    # If rollover just wrote new values, raw is stale -- re-fetch only
+    # in that (rare, once-per-day) case. Otherwise raw is already current.
+    if last_day != day:
+        raw = r.hgetall(baseline_key)
+
+    # Get today's stats
+    today = get_today_stats(r, account_id, day)
 
     if not raw:
         # No history at all — cannot compute z-scores
