@@ -405,9 +405,27 @@ def retrain_hybrid_model():
     conn.commit()
     conn.close()
 
-    # Promote if better by 1%
-    if improvement >= 0.01:
-        print(f"\nModel improved by {improvement:.4f} — promoting to production")
+   # Promote if better by 1% AND explicitly authorized.
+    # Previously promoted automatically with no backup and no way to
+    # roll back — a bad retrain (e.g. skewed by a small, recent,
+    # 5x-weighted analyst-decision sample) could silently replace a
+    # validated production model with an unvalidated one.
+    import sys
+    auto_promote_allowed = "--promote" in sys.argv
+
+    if improvement >= 0.01 and auto_promote_allowed:
+        import shutil
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+        print(f"\nModel improved by {improvement:.4f} and --promote given — "
+              f"backing up current production files before overwrite")
+        for fname in ('xgb_hybrid_model.pkl', 'scaler_hybrid.pkl',
+                      'hybrid_model_config.json'):
+            try:
+                shutil.copy(fname, f"{fname}.backup_{ts}")
+                print(f"  backed up {fname} -> {fname}.backup_{ts}")
+            except FileNotFoundError:
+                print(f"  WARNING: {fname} not found to back up — proceeding anyway")
+
         with open('xgb_hybrid_model.pkl', 'wb') as f:
             pickle.dump(model_new, f)
         with open('scaler_hybrid.pkl', 'wb') as f:
@@ -426,8 +444,13 @@ def retrain_hybrid_model():
         }
         with open('hybrid_model_config.json', 'w') as f:
             json.dump(new_config, f, indent=2)
-        print("New model promoted to production")
+        print("New model promoted to production (backups saved above)")
         return True
+    elif improvement >= 0.01:
+        print(f"\nModel improved by {improvement:.4f} but --promote was not "
+              f"given — new model evaluated and logged to registry only. "
+              f"Re-run with --promote to actually replace the production model.")
+        return False
     else:
         print(f"\nImprovement {improvement:+.4f} below threshold (0.01) — keeping current model")
         return False
@@ -452,6 +475,8 @@ def show_model_registry():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
+
     print("=== MULE DETECTION — MLOps PIPELINE ===")
     print(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
@@ -466,9 +491,18 @@ if __name__ == "__main__":
     print("\n--- Step 3: Drift monitor ---")
     drift = run_drift_monitor()
 
-    # Step 4: Retrain model
-    print("\n--- Step 4: Retraining ---")
-    retrain_hybrid_model()
+    # Step 4: Retrain model — ONLY if explicitly requested.
+    # Previously ran unconditionally on every invocation of this script,
+    # meaning even a routine check of drift/registry status silently
+    # retrained and could overwrite the production model. Now requires
+    # `python mlops.py --retrain` specifically.
+    if "--retrain" in sys.argv:
+        print("\n--- Step 4: Retraining (explicitly requested via --retrain) ---")
+        retrain_hybrid_model()
+    else:
+        print("\n--- Step 4: Retraining SKIPPED ---")
+        print("    Run with --retrain to retrain and evaluate a new model.")
+        print("    (Retraining will NOT auto-promote without --promote — see below.)")
 
     # Step 5: Show model registry
     print("\n--- Step 5: Model registry ---")
