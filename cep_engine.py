@@ -183,9 +183,13 @@ def _record_outbound(r, account_id, timestamp, dest_account, dest_bank, amount):
         "amount":       amount,
     }
     key = f"acct_window:{account_id}"
-    r.lpush(key, json.dumps(entry))
-    r.ltrim(key, 0, WINDOW_MAX_LEN - 1)
-    r.expire(key, WINDOW_TTL_SECONDS)
+    # Pipelined -- was 3 separate round-trips, now 1. No change to what
+    # gets written or how the window is capped/expired.
+    pipe = r.pipeline()
+    pipe.lpush(key, json.dumps(entry))
+    pipe.ltrim(key, 0, WINDOW_MAX_LEN - 1)
+    pipe.expire(key, WINDOW_TTL_SECONDS)
+    pipe.execute()
 
 
 def _get_window(r, account_id):
@@ -231,14 +235,17 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     _record_outbound(r, account_from, timestamp, account_to, bank_to, amount)
     window = _get_window(r, account_from)
 
-    # ── Update daily inbound/outbound tracking for GATHER_SCATTER ────────────
+   # ── Update daily inbound/outbound tracking for GATHER_SCATTER ────────────
     # Track unique senders per receiver per day
+    # Pipelined -- was 4 separate round-trips, now 1. Same sets, same TTLs.
     sender_key   = f"acct_daily_senders:{account_to}:{day}"
     receiver_key = f"acct_daily_receivers:{account_from}:{day}"
-    r.sadd(sender_key, account_from)
-    r.expire(sender_key, 90000)    # 25h TTL
-    r.sadd(receiver_key, account_to)
-    r.expire(receiver_key, 90000)
+    daily_pipe = r.pipeline()
+    daily_pipe.sadd(sender_key, account_from)
+    daily_pipe.expire(sender_key, 90000)    # 25h TTL
+    daily_pipe.sadd(receiver_key, account_to)
+    daily_pipe.expire(receiver_key, 90000)
+    daily_pipe.execute()
 
     # ── Pattern 1 — FAN_OUT_SPIKE ─────────────────────────────────────────────
     # 10+ unique destination banks in rolling 6h window.
@@ -401,9 +408,12 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
         record_inbound_transaction(r, account_to, account_from, amount, day)
 
         # Also write to acct_in_daily for legacy FAN_IN compatibility
+        # (pipelined -- was 2 separate round-trips, now 1)
         in_key_to = f"acct_in_daily:{account_to}:{day}"
-        r.hset(in_key_to, account_from, str(amount))
-        r.expire(in_key_to, 90000)
+        legacy_pipe = r.pipeline()
+        legacy_pipe.hset(in_key_to, account_from, str(amount))
+        legacy_pipe.expire(in_key_to, 90000)
+        legacy_pipe.execute()
 
         # Compute anomaly scores for the receiving account
         scores = compute_anomaly_scores(r, account_to, day)
@@ -780,9 +790,10 @@ if __name__ == "__main__":
     print("  Detected:", all_patterns if all_patterns else ['SMURFING_RING fires during smurf loop — checking...'])
     if smurfing_alerts:
         a = smurfing_alerts[-1]
-        print(f"  z_in_senders: {a.get('z_in_senders', 'N/A')}")
-        print(f"  today_senders: {a.get('today_senders', 'N/A')}")
-        print(f"  interpretation: {str(a.get('interpretation', ''))[:120]}")
+        evidence = a.get('evidence', {})
+        print(f"  z_in_senders: {evidence.get('z_in_senders', 'N/A')}")
+        print(f"  today_senders: {evidence.get('today_senders', 'N/A')}")
+        print(f"  interpretation: {str(evidence.get('interpretation', ''))[:120]}")
     print("  Expected: SMURFING_RING")
     print()
 
