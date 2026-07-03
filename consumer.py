@@ -47,7 +47,7 @@ except Exception as e:
     print(f"Could not load IBM AML labels: {e}")
 
 # ── Kafka consumer ────────────────────────────────────────────────────────────
-group_id = f'mule-detector-{int(datetime.now().timestamp())}'
+group_id = 'mule-detector-prod'
 print(f"Consumer group: {group_id}")
 
 consumer = Consumer({
