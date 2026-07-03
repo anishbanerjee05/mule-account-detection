@@ -272,15 +272,27 @@ def compute_embedding(req: EmbeddingRequest):
 
 @app.get("/embed/{account_id}")
 def get_embedding(account_id: str):
-    """Retrieve stored embedding for an account."""
+    """Retrieve stored embedding for an account.
+    Now checks Tier 1 (Redis) then Tier 2 (persistent store) --
+    previously only checked Redis, causing false "not found" errors
+    for any of the 579,735 trained accounts that hadn't yet been
+    touched by live traffic."""
     emb_json = r.get(f"embed:{account_id}")
-    if not emb_json:
-        return {"error": f"No embedding found for {account_id}"}
-    return {
-        "account_id": account_id,
-        "embedding":  json.loads(emb_json),
-        "meta":       {"method": "stored_gnn"}
-    }
+    if emb_json:
+        return {
+            "account_id": account_id,
+            "embedding":  json.loads(emb_json),
+            "meta":       {"method": "redis_cache"}
+        }
+    if account_id in persistent_embeddings:
+        embedding = persistent_embeddings[account_id]
+        r.set(f"embed:{account_id}", json.dumps(embedding), ex=21600)
+        return {
+            "account_id": account_id,
+            "embedding":  embedding,
+            "meta":       {"method": "persistent_store"}
+        }
+    return {"error": f"No embedding found for {account_id}"}
 
 
 class BatchEmbeddingRequest(BaseModel):
