@@ -91,52 +91,52 @@ import redis
 from datetime import datetime, timedelta
 
 # ── Thresholds (empirically validated) ───────────────────────────────────────
-FAN_OUT_SPIKE_WINDOW_HOURS      = 6
-FAN_OUT_SPIKE_MIN_BANKS         = 10
-FAN_OUT_SPIKE_COOLDOWN_HOURS    = 6
+FAN_OUT_SPIKE_WINDOW_HOURS = 6
+FAN_OUT_SPIKE_MIN_BANKS = 10
+FAN_OUT_SPIKE_COOLDOWN_HOURS = 6
 
-FAN_IN_WINDOW_HOURS             = 24
-FAN_IN_MIN_SENDERS              = 5
-FAN_IN_COOLDOWN_HOURS           = 24
+FAN_IN_WINDOW_HOURS = 24
+FAN_IN_MIN_SENDERS = 5
+FAN_IN_COOLDOWN_HOURS = 24
 
-GATHER_SCATTER_MIN_SENDERS      = 8
-GATHER_SCATTER_MIN_RECEIVERS    = 8
-GATHER_SCATTER_COOLDOWN_HOURS   = 24
+GATHER_SCATTER_MIN_SENDERS = 8
+GATHER_SCATTER_MIN_RECEIVERS = 8
+GATHER_SCATTER_COOLDOWN_HOURS = 24
 
 SCATTER_GATHER_MIN_INTERMEDIARIES = 3
-SCATTER_GATHER_WINDOW_HOURS     = 24
-SCATTER_GATHER_COOLDOWN_HOURS   = 24
+SCATTER_GATHER_WINDOW_HOURS = 24
+SCATTER_GATHER_COOLDOWN_HOURS = 24
 
-SIMPLE_CYCLE_WINDOW_HOURS       = 24
-SIMPLE_CYCLE_COOLDOWN_HOURS     = 24
+SIMPLE_CYCLE_WINDOW_HOURS = 24
+SIMPLE_CYCLE_COOLDOWN_HOURS = 24
 
-STRUCTURING_MIN_COUNT           = 3
+STRUCTURING_MIN_COUNT = 3
 
 # ── New pattern thresholds (v3) ───────────────────────────────────────────────
 
 # SMURFING_RING: statistical z-score anomaly detection
 # Primary detection: z >= 3.0 on inbound sender count or inbound amount
 # No hardcoded amount threshold or variance percentage
-SMURFING_RING_Z_THRESHOLD          = 3.0  # standard statistical outlier
-SMURFING_RING_MIN_HISTORY_DAYS     = 7    # minimum days before z-score is trusted
-SMURFING_RING_MIN_SENDERS_FALLBACK = 10   # fallback when history insufficient
-SMURFING_RING_COOLDOWN_HOURS    = 24
+SMURFING_RING_Z_THRESHOLD = 3.0  # standard statistical outlier
+SMURFING_RING_MIN_HISTORY_DAYS = 7  # minimum days before z-score is trusted
+SMURFING_RING_MIN_SENDERS_FALLBACK = 10  # fallback when history insufficient
+SMURFING_RING_COOLDOWN_HOURS = 24
 
 # TEMPORAL_LAYERING: validated against IBM AML 6.9M rows
 # Best threshold: passthrough 0.90-1.10, max 3 days
 # Result: 11,637 flagged, 290 confirmed, 2.49% precision, 3.2x lift
-TEMPORAL_LAYERING_MIN_DELAY_DAYS  = 1    # minimum days between receive and forward
-TEMPORAL_LAYERING_MAX_DELAY_DAYS  = 3    # 3 days max (validated optimal)
-TEMPORAL_LAYERING_PASSTHROUGH_LO  = 0.90 # forwarded >= 90% of received (validated)
-TEMPORAL_LAYERING_PASSTHROUGH_HI  = 1.10
-TEMPORAL_LAYERING_COOLDOWN_HOURS  = 24
+TEMPORAL_LAYERING_MIN_DELAY_DAYS = 1  # minimum days between receive and forward
+TEMPORAL_LAYERING_MAX_DELAY_DAYS = 3  # 3 days max (validated optimal)
+TEMPORAL_LAYERING_PASSTHROUGH_LO = 0.90  # forwarded >= 90% of received (validated)
+TEMPORAL_LAYERING_PASSTHROUGH_HI = 1.10
+TEMPORAL_LAYERING_COOLDOWN_HOURS = 24
 
 # RANDOM_STRUCTURING: validated against IBM AML 6.9M rows
 # Result: 10+ txns AND total >= Rs.5L gives 100% precision, 128.4x lift (14/14 accounts)
 # CV filter removed — volume alone is the discriminator (fraud avg 60 txns vs legit avg 5)
-RANDOM_STRUCT_MIN_COUNT         = 10     # minimum sub-threshold transactions in the window
-RANDOM_STRUCT_THRESHOLD         = 50000  # all amounts individually below this (Rs.50K)
-RANDOM_STRUCT_MIN_TOTAL         = 500000 # collective total must exceed Rs.5L (validated)
+RANDOM_STRUCT_MIN_COUNT = 10  # minimum sub-threshold transactions in the window
+RANDOM_STRUCT_THRESHOLD = 50000  # all amounts individually below this (Rs.50K)
+RANDOM_STRUCT_MIN_TOTAL = 500000  # collective total must exceed Rs.5L (validated)
 RANDOM_STRUCTURING_COOLDOWN_HOURS = 24
 
 # CROSS_BANK_ACCELERATION: DROPPED after IBM AML validation
@@ -147,16 +147,16 @@ RANDOM_STRUCTURING_COOLDOWN_HOURS = 24
 # legitimate high-volume accounts. This pattern is dataset-specific
 # and will be revisited with real SBI/Kotak transaction data in Phase 1.
 # The pattern code is kept but disabled via an impossible threshold.
-CROSS_BANK_ACCEL_WINDOW_HOURS   = 2
+CROSS_BANK_ACCEL_WINDOW_HOURS = 2
 CROSS_BANK_ACCEL_PASSTHROUGH_LO = 0.70
 CROSS_BANK_ACCEL_PASSTHROUGH_HI = 1.05
 CROSS_BANK_ACCEL_COOLDOWN_HOURS = 12
-STRUCTURING_BANDS               = [(900, 999), (4500, 4999), (9000, 9999)]
-STRUCTURING_COOLDOWN_HOURS      = 24
+STRUCTURING_BANDS = [(900, 999), (4500, 4999), (9000, 9999)]
+STRUCTURING_COOLDOWN_HOURS = 24
 
-WINDOW_MAX_LEN      = 200
-WINDOW_TTL_SECONDS  = 86400   # 24h
-CEP_ALERTS_MAX_LEN  = 200
+WINDOW_MAX_LEN = 200
+WINDOW_TTL_SECONDS = 86400  # 24h
+CEP_ALERTS_MAX_LEN = 200
 
 
 def _parse_ts(ts_str: str) -> datetime:
@@ -166,21 +166,27 @@ def _parse_ts(ts_str: str) -> datetime:
 def _push_alert(r, account_id, pattern_type, timestamp, evidence):
     alert = {
         "pattern_type": pattern_type,
-        "account_id":   account_id,
-        "timestamp":    timestamp,
-        "evidence":     evidence,
+        "account_id": account_id,
+        "timestamp": timestamp,
+        "evidence": evidence,
     }
-    r.lpush(f"cep_alerts:{account_id}", json.dumps(alert))
-    r.ltrim(f"cep_alerts:{account_id}", 0, CEP_ALERTS_MAX_LEN - 1)
+    key = f"cep_alerts:{account_id}"
+    # Pipelined -- was 2 round-trips, now 1. Called by every one of the
+    # 10 patterns on every fire, so this is the single highest-leverage
+    # change available without touching any pattern's detection logic.
+    pipe = r.pipeline()
+    pipe.lpush(key, json.dumps(alert))
+    pipe.ltrim(key, 0, CEP_ALERTS_MAX_LEN - 1)
+    pipe.execute()
     return alert
 
 
 def _record_outbound(r, account_id, timestamp, dest_account, dest_bank, amount):
     entry = {
-        "timestamp":    timestamp,
+        "timestamp": timestamp,
         "dest_account": dest_account,
-        "dest_bank":    dest_bank,
-        "amount":       amount,
+        "dest_bank": dest_bank,
+        "amount": amount,
     }
     key = f"acct_window:{account_id}"
     # Pipelined -- was 3 separate round-trips, now 1. No change to what
@@ -202,12 +208,11 @@ def _on_cooldown(r, account_id, pattern_type):
 
 
 def _start_cooldown(r, account_id, pattern_type, hours):
-    r.set(f"cep_cooldown:{account_id}:{pattern_type}", "1",
-          ex=int(hours * 3600))
+    r.set(f"cep_cooldown:{account_id}:{pattern_type}", "1", ex=int(hours * 3600))
 
 
 def _day_key(timestamp: str) -> str:
-    return timestamp[:10]   # 'YYYY-MM-DD'
+    return timestamp[:10]  # 'YYYY-MM-DD'
 
 
 def check_patterns(r: redis.Redis, event: dict) -> list:
@@ -222,27 +227,27 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     """
     detected = []
 
-    account_from = str(event['account_from'])
-    account_to   = str(event['account_to'])
-    bank_from    = str(event.get('bank_from', ''))
-    bank_to      = str(event['bank_to'])
-    amount       = float(event['amount_paid'])
-    timestamp    = str(event['timestamp'])
-    now          = _parse_ts(timestamp)
-    day          = _day_key(timestamp)
+    account_from = str(event["account_from"])
+    account_to = str(event["account_to"])
+    bank_from = str(event.get("bank_from", ""))
+    bank_to = str(event["bank_to"])
+    amount = float(event["amount_paid"])
+    timestamp = str(event["timestamp"])
+    now = _parse_ts(timestamp)
+    day = _day_key(timestamp)
 
     # ── Record outbound transaction in rolling window ─────────────────────────
     _record_outbound(r, account_from, timestamp, account_to, bank_to, amount)
     window = _get_window(r, account_from)
 
-   # ── Update daily inbound/outbound tracking for GATHER_SCATTER ────────────
+    # ── Update daily inbound/outbound tracking for GATHER_SCATTER ────────────
     # Track unique senders per receiver per day
     # Pipelined -- was 4 separate round-trips, now 1. Same sets, same TTLs.
-    sender_key   = f"acct_daily_senders:{account_to}:{day}"
+    sender_key = f"acct_daily_senders:{account_to}:{day}"
     receiver_key = f"acct_daily_receivers:{account_from}:{day}"
     daily_pipe = r.pipeline()
     daily_pipe.sadd(sender_key, account_from)
-    daily_pipe.expire(sender_key, 90000)    # 25h TTL
+    daily_pipe.expire(sender_key, 90000)  # 25h TTL
     daily_pipe.sadd(receiver_key, account_to)
     daily_pipe.expire(receiver_key, 90000)
     daily_pipe.execute()
@@ -250,49 +255,93 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     # ── Pattern 1 — FAN_OUT_SPIKE ─────────────────────────────────────────────
     # 10+ unique destination banks in rolling 6h window.
     cutoff_6h = now - timedelta(hours=FAN_OUT_SPIKE_WINDOW_HOURS)
-    recent_6h = [w for w in window if _parse_ts(w['timestamp']) >= cutoff_6h]
-    unique_banks = {w['dest_bank'] for w in recent_6h}
-    if (len(unique_banks) >= FAN_OUT_SPIKE_MIN_BANKS
-            and not _on_cooldown(r, account_from, "FAN_OUT_SPIKE")):
-        alert = _push_alert(r, account_from, "FAN_OUT_SPIKE", timestamp, {
-            "unique_banks":   len(unique_banks),
-            "window_hours":   FAN_OUT_SPIKE_WINDOW_HOURS,
-            "transfer_count": len(recent_6h),
-        })
+    recent_6h = [w for w in window if _parse_ts(w["timestamp"]) >= cutoff_6h]
+    unique_banks = {w["dest_bank"] for w in recent_6h}
+    if len(unique_banks) >= FAN_OUT_SPIKE_MIN_BANKS and not _on_cooldown(
+        r, account_from, "FAN_OUT_SPIKE"
+    ):
+        alert = _push_alert(
+            r,
+            account_from,
+            "FAN_OUT_SPIKE",
+            timestamp,
+            {
+                "unique_banks": len(unique_banks),
+                "window_hours": FAN_OUT_SPIKE_WINDOW_HOURS,
+                "transfer_count": len(recent_6h),
+            },
+        )
         detected.append(alert)
-        _start_cooldown(r, account_from, "FAN_OUT_SPIKE",
-                        FAN_OUT_SPIKE_COOLDOWN_HOURS)
+        _start_cooldown(r, account_from, "FAN_OUT_SPIKE", FAN_OUT_SPIKE_COOLDOWN_HOURS)
+
+    # ── Batched daily scard lookups for Patterns 2, 3, 4 ──────────────────────
+    # FAN_IN, GATHER_SCATTER, and SCATTER_GATHER each read set cardinalities
+    # from acct_daily_senders/receivers keys. One value (senders to
+    # account_to today) was being fetched TWICE under two different names
+    # -- FAN_IN's n_senders and SCATTER_GATHER's n_to_senders are the same
+    # key. Combined into one pipeline covering all 4 distinct keys needed:
+    # 5 round-trips (1 of them a genuine duplicate) collapsed to 1.
+    senders_to_account_to_key = f"acct_daily_senders:{account_to}:{day}"
+    senders_to_account_from_key = f"acct_daily_senders:{account_from}:{day}"
+    receivers_from_account_from_key = receiver_key
+    receivers_from_account_to_key = f"acct_daily_receivers:{account_to}:{day}"
+
+    scard_pipe = r.pipeline()
+    scard_pipe.scard(senders_to_account_to_key)
+    scard_pipe.scard(senders_to_account_from_key)
+    scard_pipe.scard(receivers_from_account_from_key)
+    scard_pipe.scard(receivers_from_account_to_key)
+    (
+        n_senders_to_account_to,
+        n_senders_to_account_from,
+        n_receivers_from_account_from,
+        n_receivers_from_account_to,
+    ) = scard_pipe.execute()
 
     # ── Pattern 2 — FAN_IN ────────────────────────────────────────────────────
     # Receives from 5+ distinct senders within 24h.
     # Check the receiver side: account_to has received from account_from.
-    n_senders = r.scard(sender_key)
-    if (n_senders >= FAN_IN_MIN_SENDERS
-            and not _on_cooldown(r, account_to, "FAN_IN")):
-        alert = _push_alert(r, account_to, "FAN_IN", timestamp, {
-            "unique_senders": n_senders,
-            "window_hours":   FAN_IN_WINDOW_HOURS,
-            "day":            day,
-        })
+    n_senders = n_senders_to_account_to
+    if n_senders >= FAN_IN_MIN_SENDERS and not _on_cooldown(r, account_to, "FAN_IN"):
+        alert = _push_alert(
+            r,
+            account_to,
+            "FAN_IN",
+            timestamp,
+            {
+                "unique_senders": n_senders,
+                "window_hours": FAN_IN_WINDOW_HOURS,
+                "day": day,
+            },
+        )
         detected.append(alert)
         _start_cooldown(r, account_to, "FAN_IN", FAN_IN_COOLDOWN_HOURS)
 
     # ── Pattern 3 — GATHER_SCATTER ────────────────────────────────────────────
     # Same account receives from 8+ distinct senders AND sends to 8+
     # distinct receivers on the same calendar day.
-    n_senders_as_receiver = r.scard(f"acct_daily_senders:{account_from}:{day}")
-    n_receivers_as_sender = r.scard(receiver_key)
-    if (n_senders_as_receiver >= GATHER_SCATTER_MIN_SENDERS
-            and n_receivers_as_sender >= GATHER_SCATTER_MIN_RECEIVERS
-            and not _on_cooldown(r, account_from, "GATHER_SCATTER")):
-        alert = _push_alert(r, account_from, "GATHER_SCATTER", timestamp, {
-            "unique_senders":   n_senders_as_receiver,
-            "unique_receivers": n_receivers_as_sender,
-            "day":              day,
-        })
+    n_senders_as_receiver = n_senders_to_account_from
+    n_receivers_as_sender = n_receivers_from_account_from
+    if (
+        n_senders_as_receiver >= GATHER_SCATTER_MIN_SENDERS
+        and n_receivers_as_sender >= GATHER_SCATTER_MIN_RECEIVERS
+        and not _on_cooldown(r, account_from, "GATHER_SCATTER")
+    ):
+        alert = _push_alert(
+            r,
+            account_from,
+            "GATHER_SCATTER",
+            timestamp,
+            {
+                "unique_senders": n_senders_as_receiver,
+                "unique_receivers": n_receivers_as_sender,
+                "day": day,
+            },
+        )
         detected.append(alert)
-        _start_cooldown(r, account_from, "GATHER_SCATTER",
-                        GATHER_SCATTER_COOLDOWN_HOURS)
+        _start_cooldown(
+            r, account_from, "GATHER_SCATTER", GATHER_SCATTER_COOLDOWN_HOURS
+        )
 
     # ── Pattern 4 — SCATTER_GATHER ────────────────────────────────────────────
     # account_from sent to account_to (intermediary).
@@ -301,19 +350,28 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     # Approximation: check if account_to has received from 3+ distinct
     # senders today AND is now forwarding -- a lightweight proxy for
     # the full 3-table join the DuckDB validator uses.
-    n_to_senders = r.scard(f"acct_daily_senders:{account_to}:{day}")
-    to_receivers = r.scard(f"acct_daily_receivers:{account_to}:{day}")
-    if (n_to_senders >= SCATTER_GATHER_MIN_INTERMEDIARIES
-            and to_receivers >= 1
-            and not _on_cooldown(r, account_from, "SCATTER_GATHER")):
-        alert = _push_alert(r, account_from, "SCATTER_GATHER", timestamp, {
-            "intermediary":           account_to,
-            "intermediary_senders":   n_to_senders,
-            "window_hours":           SCATTER_GATHER_WINDOW_HOURS,
-        })
+    n_to_senders = n_senders_to_account_to
+    to_receivers = n_receivers_from_account_to
+    if (
+        n_to_senders >= SCATTER_GATHER_MIN_INTERMEDIARIES
+        and to_receivers >= 1
+        and not _on_cooldown(r, account_from, "SCATTER_GATHER")
+    ):
+        alert = _push_alert(
+            r,
+            account_from,
+            "SCATTER_GATHER",
+            timestamp,
+            {
+                "intermediary": account_to,
+                "intermediary_senders": n_to_senders,
+                "window_hours": SCATTER_GATHER_WINDOW_HOURS,
+            },
+        )
         detected.append(alert)
-        _start_cooldown(r, account_from, "SCATTER_GATHER",
-                        SCATTER_GATHER_COOLDOWN_HOURS)
+        _start_cooldown(
+            r, account_from, "SCATTER_GATHER", SCATTER_GATHER_COOLDOWN_HOURS
+        )
 
     # ── Pattern 5 — SIMPLE_CYCLE ──────────────────────────────────────────────
     # A sends to B, B sends to C, C sends back to A -- same calendar day.
@@ -328,34 +386,59 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
         cutoff_day = now - timedelta(hours=SIMPLE_CYCLE_WINDOW_HOURS)
 
         # Find all C accounts that B (account_to) sent to today, excluding A
-        c_candidates = set()
+        c_candidates = list()
         for w in to_window:
-            if (_parse_ts(w['timestamp']) >= cutoff_day
-                    and w['dest_account'] != account_from):
-                c_candidates.add(w['dest_account'])
+            if (
+                _parse_ts(w["timestamp"]) >= cutoff_day
+                and w["dest_account"] != account_from
+            ):
+                if w["dest_account"] not in c_candidates:
+                    c_candidates.append(w["dest_account"])
                 if len(c_candidates) >= 10:
                     break
 
-        # Check if any C sent back to A today
+        # Check if any C sent back to A today.
+        # Batched: fetch all candidate windows in one pipeline round-trip
+        # instead of up to 10 sequential calls. Trade-off: loses the
+        # early-exit on first match -- always fetches all candidates now.
+        # Net win whenever there is no cycle (the common case), since the
+        # old code did all 10 sequential calls anyway before concluding
+        # that; only a genuine early-match case on a small candidate set
+        # could have been faster before.
         cycle_found = False
         cycle_via = None
-        for c_account in c_candidates:
-            c_window = _get_window(r, c_account)
-            if any(w['dest_account'] == account_from
-                   and _parse_ts(w['timestamp']) >= cutoff_day
-                   for w in c_window):
-                cycle_found = True
-                cycle_via = c_account
-                break
+        if c_candidates:
+            pipe = r.pipeline()
+            for c_account in c_candidates:
+                pipe.lrange(f"acct_window:{c_account}", 0, WINDOW_MAX_LEN - 1)
+            raw_windows = pipe.execute()
+
+            for c_account, raw in zip(c_candidates, raw_windows):
+                c_window = [json.loads(x) for x in raw]
+                if any(
+                    w["dest_account"] == account_from
+                    and _parse_ts(w["timestamp"]) >= cutoff_day
+                    for w in c_window
+                ):
+                    cycle_found = True
+                    cycle_via = c_account
+                    break
 
         if cycle_found:
-            alert = _push_alert(r, account_from, "SIMPLE_CYCLE", timestamp, {
-                "cycle_path":   [account_from, account_to, cycle_via, account_from],
-                "window_hours": SIMPLE_CYCLE_WINDOW_HOURS,
-            })
+            alert = _push_alert(
+                r,
+                account_from,
+                "SIMPLE_CYCLE",
+                timestamp,
+                {
+                    "cycle_path": [account_from, account_to, cycle_via, account_from],
+                    "window_hours": SIMPLE_CYCLE_WINDOW_HOURS,
+                },
+            )
             detected.append(alert)
-            _start_cooldown(r, account_from, "SIMPLE_CYCLE",
-                            SIMPLE_CYCLE_COOLDOWN_HOURS)
+            _start_cooldown(
+                r, account_from, "SIMPLE_CYCLE", SIMPLE_CYCLE_COOLDOWN_HOURS
+            )
 
     # ── Pattern 6 — STRUCTURING ───────────────────────────────────────────────
     # 3+ transactions in the same day with amounts just below common
@@ -363,20 +446,32 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     struct_key = f"acct_structuring:{account_from}:{day}"
     in_band = any(lo <= amount <= hi for lo, hi in STRUCTURING_BANDS)
     if in_band:
-        r.incr(struct_key)
-        r.expire(struct_key, 90000)
-        count = int(r.get(struct_key) or 0)
-        if (count >= STRUCTURING_MIN_COUNT
-                and not _on_cooldown(r, account_from, "STRUCTURING")):
-            alert = _push_alert(r, account_from, "STRUCTURING", timestamp, {
-                "structured_count": count,
-                "amount":           amount,
-                "day":              day,
-                "bands":            str(STRUCTURING_BANDS),
-            })
+        # Pipelined incr+expire (2 round-trips -> 1). The subsequent get
+        # still needs its own round-trip since we need the returned
+        # count value, which pipeline.execute() would give us anyway --
+        # folding it in too, 3 calls -> 1.
+        pipe = r.pipeline()
+        pipe.incr(struct_key)
+        pipe.expire(struct_key, 90000)
+        results = pipe.execute()
+        count = int(results[0])
+        if count >= STRUCTURING_MIN_COUNT and not _on_cooldown(
+            r, account_from, "STRUCTURING"
+        ):
+            alert = _push_alert(
+                r,
+                account_from,
+                "STRUCTURING",
+                timestamp,
+                {
+                    "structured_count": count,
+                    "amount": amount,
+                    "day": day,
+                    "bands": str(STRUCTURING_BANDS),
+                },
+            )
             detected.append(alert)
-            _start_cooldown(r, account_from, "STRUCTURING",
-                            STRUCTURING_COOLDOWN_HOURS)
+            _start_cooldown(r, account_from, "STRUCTURING", STRUCTURING_COOLDOWN_HOURS)
 
     # ── Pattern 7 — SMURFING_RING ─────────────────────────────────────────────
     # Statistical anomaly detection — no fixed thresholds.
@@ -420,8 +515,8 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
         anomalous, reason = is_anomalous(scores, z_threshold=3.0)
 
         if anomalous:
-            today_stats  = scores["today"]
-            ring_size    = today_stats["in_senders"]
+            today_stats = scores["today"]
+            ring_size = today_stats["in_senders"]
             total_inflow = today_stats["in_amount"]
 
             # Retrieve sender list for investigator context
@@ -429,10 +524,7 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
             sender_list = list(r.smembers(sender_key))[:50]
 
             # Risk tier based on z-score magnitude
-            max_z = max(
-                scores["in_senders_z"],
-                scores["in_amount_z"]
-            )
+            max_z = max(scores["in_senders_z"], scores["in_amount_z"])
             if max_z >= 6.0:
                 ring_tier = "L3 — EXTREME ANOMALY (6+ sigma)"
             elif max_z >= 4.0:
@@ -440,35 +532,41 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
             else:
                 ring_tier = "L1 — STATISTICAL ANOMALY (3+ sigma)"
 
-            alert = _push_alert(r, account_to, "SMURFING_RING", timestamp, {
-                "target_account":    account_to,
-                "detection_method":  "statistical_z_score",
-                "anomaly_reason":    reason,
-                "z_in_senders":      scores["in_senders_z"],
-                "z_in_amount":       scores["in_amount_z"],
-                "days_of_history":   scores["days_observed"],
-                "today_senders":     ring_size,
-                "today_inflow":      round(total_inflow, 2),
-                "historical_mean_senders": scores["baseline"]["in_senders_mean"],
-                "historical_std_senders":  scores["baseline"]["in_senders_std"],
-                "historical_mean_inflow":  scores["baseline"]["in_amount_mean"],
-                "historical_std_inflow":   scores["baseline"]["in_amount_std"],
-                "sender_accounts":   sender_list,
-                "risk_escalation":   ring_tier,
-                "interpretation":    (
-                    f"SMURFING ANOMALY: {reason}. "
-                    f"{ring_size} unique senders today, "
-                    f"Rs.{total_inflow:,.0f} total inflow. "
-                    f"Based on {scores['days_observed']} days of account history."
-                ),
-            })
+            alert = _push_alert(
+                r,
+                account_to,
+                "SMURFING_RING",
+                timestamp,
+                {
+                    "target_account": account_to,
+                    "detection_method": "statistical_z_score",
+                    "anomaly_reason": reason,
+                    "z_in_senders": scores["in_senders_z"],
+                    "z_in_amount": scores["in_amount_z"],
+                    "days_of_history": scores["days_observed"],
+                    "today_senders": ring_size,
+                    "today_inflow": round(total_inflow, 2),
+                    "historical_mean_senders": scores["baseline"]["in_senders_mean"],
+                    "historical_std_senders": scores["baseline"]["in_senders_std"],
+                    "historical_mean_inflow": scores["baseline"]["in_amount_mean"],
+                    "historical_std_inflow": scores["baseline"]["in_amount_std"],
+                    "sender_accounts": sender_list,
+                    "risk_escalation": ring_tier,
+                    "interpretation": (
+                        f"SMURFING ANOMALY: {reason}. "
+                        f"{ring_size} unique senders today, "
+                        f"Rs.{total_inflow:,.0f} total inflow. "
+                        f"Based on {scores['days_observed']} days of account history."
+                    ),
+                },
+            )
             detected.append(alert)
 
         elif scores["days_observed"] < 7:
             # Insufficient history — fall back to minimum sender count heuristic
             # and flag as LOW CONFIDENCE
             in_key_to = f"acct_in_daily:{account_to}:{day}"
-            senders   = r.hgetall(in_key_to)
+            senders = r.hgetall(in_key_to)
             if len(senders) >= SMURFING_RING_MIN_SENDERS_FALLBACK:
                 all_amounts = []
                 for s, a in senders.items():
@@ -476,21 +574,27 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
                         all_amounts.append(float(a))
                     except (ValueError, TypeError):
                         pass
-                alert = _push_alert(r, account_to, "SMURFING_RING", timestamp, {
-                    "target_account":   account_to,
-                    "detection_method": "fallback_count_heuristic",
-                    "confidence":       "LOW — insufficient history for z-score",
-                    "days_of_history":  scores["days_observed"],
-                    "sender_count":     len(senders),
-                    "total_inflow":     round(sum(all_amounts), 2),
-                    "sender_accounts":  list(senders.keys())[:50],
-                    "risk_escalation":  "L1 — REVIEW (low confidence)",
-                    "interpretation":   (
-                        f"{len(senders)} senders to this account today. "
-                        f"Only {scores['days_observed']} days of history — "
-                        f"z-score unavailable. Manual review recommended."
-                    ),
-                })
+                alert = _push_alert(
+                    r,
+                    account_to,
+                    "SMURFING_RING",
+                    timestamp,
+                    {
+                        "target_account": account_to,
+                        "detection_method": "fallback_count_heuristic",
+                        "confidence": "LOW — insufficient history for z-score",
+                        "days_of_history": scores["days_observed"],
+                        "sender_count": len(senders),
+                        "total_inflow": round(sum(all_amounts), 2),
+                        "sender_accounts": list(senders.keys())[:50],
+                        "risk_escalation": "L1 — REVIEW (low confidence)",
+                        "interpretation": (
+                            f"{len(senders)} senders to this account today. "
+                            f"Only {scores['days_observed']} days of history — "
+                            f"z-score unavailable. Manual review recommended."
+                        ),
+                    },
+                )
                 detected.append(alert)
 
     except ImportError:
@@ -498,11 +602,6 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
         in_key_to = f"acct_in_daily:{account_to}:{day}"
         r.hset(in_key_to, account_from, str(amount))
         r.expire(in_key_to, 90000)
-
-
-
-
-
 
     # ── Pattern 8 — TEMPORAL_LAYERING ────────────────────────────────────────
     # Detects multi-day hop chains where money moves through a series of
@@ -517,13 +616,15 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     # 24h. Sophisticated laundering uses 3-7 day delays between hops.
     # Validated: passthrough 0.90-1.10, max 3 days → 2.49% precision, 3.2x lift
     if not _on_cooldown(r, account_from, "TEMPORAL_LAYERING"):
-        three_days_ago = (now - timedelta(days=TEMPORAL_LAYERING_MAX_DELAY_DAYS)).timestamp()
-        one_day_ago    = (now - timedelta(hours=24)).timestamp()
+        three_days_ago = (
+            now - timedelta(days=TEMPORAL_LAYERING_MAX_DELAY_DAYS)
+        ).timestamp()
+        one_day_ago = (now - timedelta(hours=24)).timestamp()
 
         inbound_raw = r.zrangebyscore(
             f"txn_in:{account_from}",
             three_days_ago,
-            one_day_ago    # received 1-3 days ago (time-delayed hop)
+            one_day_ago,  # received 1-3 days ago (time-delayed hop)
         )
 
         if inbound_raw:
@@ -531,38 +632,56 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
             for edge_json in inbound_raw[-10:]:
                 try:
                     edge = json.loads(edge_json)
-                    prior_inflows.append({
-                        "from":   edge.get("from", ""),
-                        "amount": float(edge.get("amount", 0)),
-                        "ts":     edge.get("ts", ""),
-                        "bank":   edge.get("bfrom", ""),
-                    })
+                    prior_inflows.append(
+                        {
+                            "from": edge.get("from", ""),
+                            "amount": float(edge.get("amount", 0)),
+                            "ts": edge.get("ts", ""),
+                            "bank": edge.get("bfrom", ""),
+                        }
+                    )
                 except Exception:
                     pass
 
             if prior_inflows:
                 total_prior = sum(p["amount"] for p in prior_inflows)
                 passthrough_ratio = amount / total_prior if total_prior > 0 else 0
-                if (TEMPORAL_LAYERING_PASSTHROUGH_LO
-                        <= passthrough_ratio
-                        <= TEMPORAL_LAYERING_PASSTHROUGH_HI):
-                    delay_days = round(
-                        (now - _parse_ts(prior_inflows[-1]["ts"])).total_seconds()
-                        / 86400, 1
-                    ) if prior_inflows else 0
-                    alert = _push_alert(r, account_from, "TEMPORAL_LAYERING",
-                                        timestamp, {
-                        "current_forward_amount": amount,
-                        "prior_inflow_total":     round(total_prior, 2),
-                        "passthrough_ratio":      round(passthrough_ratio, 4),
-                        "prior_sources":          [p["from"] for p in prior_inflows[:5]],
-                        "delay_days":             delay_days,
-                        "destination":            account_to,
-                        "validation":             "2.49% precision, 3.2x lift on IBM AML 6.9M rows",
-                    })
+                if (
+                    TEMPORAL_LAYERING_PASSTHROUGH_LO
+                    <= passthrough_ratio
+                    <= TEMPORAL_LAYERING_PASSTHROUGH_HI
+                ):
+                    delay_days = (
+                        round(
+                            (now - _parse_ts(prior_inflows[-1]["ts"])).total_seconds()
+                            / 86400,
+                            1,
+                        )
+                        if prior_inflows
+                        else 0
+                    )
+                    alert = _push_alert(
+                        r,
+                        account_from,
+                        "TEMPORAL_LAYERING",
+                        timestamp,
+                        {
+                            "current_forward_amount": amount,
+                            "prior_inflow_total": round(total_prior, 2),
+                            "passthrough_ratio": round(passthrough_ratio, 4),
+                            "prior_sources": [p["from"] for p in prior_inflows[:5]],
+                            "delay_days": delay_days,
+                            "destination": account_to,
+                            "validation": "2.49% precision, 3.2x lift on IBM AML 6.9M rows",
+                        },
+                    )
                     detected.append(alert)
-                    _start_cooldown(r, account_from, "TEMPORAL_LAYERING",
-                                    TEMPORAL_LAYERING_COOLDOWN_HOURS)
+                    _start_cooldown(
+                        r,
+                        account_from,
+                        "TEMPORAL_LAYERING",
+                        TEMPORAL_LAYERING_COOLDOWN_HOURS,
+                    )
 
     # ── Pattern 9 — RANDOM_STRUCTURING ───────────────────────────────────────
     # Validated against IBM AML 6.9M rows:
@@ -575,38 +694,50 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     # Any account sending 10+ transactions all below Rs.50,000 with daily total
     # exceeding Rs.5,00,000 is definitively engaging in structured placement.
     if not _on_cooldown(r, account_from, "RANDOM_STRUCTURING"):
-        window     = _get_window(r, account_from)
+        # Reuses `window`, already fetched once at the top of this
+        # function right after _record_outbound() -- was re-fetching
+        # the identical key a second time for no reason.
         cutoff_day = now - timedelta(hours=24)
         today_txns = [
-            w for w in window
-            if _parse_ts(w['timestamp']) >= cutoff_day
-            and 0 < float(w.get('amount', 0)) < RANDOM_STRUCT_THRESHOLD
+            w
+            for w in window
+            if _parse_ts(w["timestamp"]) >= cutoff_day
+            and 0 < float(w.get("amount", 0)) < RANDOM_STRUCT_THRESHOLD
         ]
 
         if len(today_txns) >= RANDOM_STRUCT_MIN_COUNT:
-            amounts_today = [float(w.get('amount', 0)) for w in today_txns]
-            total_today   = sum(amounts_today)
+            amounts_today = [float(w.get("amount", 0)) for w in today_txns]
+            total_today = sum(amounts_today)
 
             if total_today >= RANDOM_STRUCT_MIN_TOTAL:
-                alert = _push_alert(r, account_from, "RANDOM_STRUCTURING",
-                                    timestamp, {
-                    "transaction_count":    len(today_txns),
-                    "total_amount":         round(total_today, 2),
-                    "mean_amount":          round(total_today / len(today_txns), 2),
-                    "max_single":           round(max(amounts_today), 2),
-                    "min_single":           round(min(amounts_today), 2),
-                    "threshold_per_txn":    RANDOM_STRUCT_THRESHOLD,
-                    "validation":           "100% precision, 128.4x lift on IBM AML 6.9M rows",
-                    "interpretation":       (
-                        f"{len(today_txns)} transactions all below "
-                        f"Rs.{RANDOM_STRUCT_THRESHOLD:,} totalling "
-                        f"Rs.{total_today:,.0f} today — "
-                        f"high-volume sub-threshold structuring"
-                    ),
-                })
+                alert = _push_alert(
+                    r,
+                    account_from,
+                    "RANDOM_STRUCTURING",
+                    timestamp,
+                    {
+                        "transaction_count": len(today_txns),
+                        "total_amount": round(total_today, 2),
+                        "mean_amount": round(total_today / len(today_txns), 2),
+                        "max_single": round(max(amounts_today), 2),
+                        "min_single": round(min(amounts_today), 2),
+                        "threshold_per_txn": RANDOM_STRUCT_THRESHOLD,
+                        "validation": "100% precision, 128.4x lift on IBM AML 6.9M rows",
+                        "interpretation": (
+                            f"{len(today_txns)} transactions all below "
+                            f"Rs.{RANDOM_STRUCT_THRESHOLD:,} totalling "
+                            f"Rs.{total_today:,.0f} today — "
+                            f"high-volume sub-threshold structuring"
+                        ),
+                    },
+                )
                 detected.append(alert)
-                _start_cooldown(r, account_from, "RANDOM_STRUCTURING",
-                                RANDOM_STRUCTURING_COOLDOWN_HOURS)
+                _start_cooldown(
+                    r,
+                    account_from,
+                    "RANDOM_STRUCTURING",
+                    RANDOM_STRUCTURING_COOLDOWN_HOURS,
+                )
 
     # ── Pattern 10 — CROSS_BANK_ACCELERATION ─────────────────────────────────
     # Detects inter-bank transit mules: account receives from Bank A and
@@ -626,7 +757,9 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
     # IBM AML precision numbers are NOT reported for this pattern because
     # the dataset does not contain this typology.
     if not _on_cooldown(r, account_from, "CROSS_BANK_ACCELERATION"):
-        two_hours_ago  = (now - timedelta(hours=CROSS_BANK_ACCEL_WINDOW_HOURS)).timestamp()
+        two_hours_ago = (
+            now - timedelta(hours=CROSS_BANK_ACCEL_WINDOW_HOURS)
+        ).timestamp()
         recent_inbound = r.zrangebyscore(
             f"txn_in:{account_from}", two_hours_ago, now.timestamp()
         )
@@ -634,10 +767,10 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
         if recent_inbound:
             for edge_json in recent_inbound[-5:]:
                 try:
-                    edge        = json.loads(edge_json)
-                    recv_bank   = edge.get("bfrom", "")
+                    edge = json.loads(edge_json)
+                    recv_bank = edge.get("bfrom", "")
                     recv_amount = float(edge.get("amount", 0))
-                    send_bank   = bank_to
+                    send_bank = bank_to
 
                     cross_bank_transit = (
                         recv_bank
@@ -648,34 +781,42 @@ def check_patterns(r: redis.Redis, event: dict) -> list:
                     pass_through = (
                         recv_amount > 0
                         and CROSS_BANK_ACCEL_PASSTHROUGH_LO
-                            <= amount / recv_amount
-                            <= CROSS_BANK_ACCEL_PASSTHROUGH_HI
+                        <= amount / recv_amount
+                        <= CROSS_BANK_ACCEL_PASSTHROUGH_HI
                     )
 
                     if cross_bank_transit and pass_through:
                         alert = _push_alert(
-                            r, account_from, "CROSS_BANK_ACCELERATION",
-                            timestamp, {
-                            "received_from_bank":  recv_bank,
-                            "forwarding_to_bank":  send_bank,
-                            "received_amount":     round(recv_amount, 2),
-                            "forwarded_amount":    round(amount, 2),
-                            "passthrough_ratio":   round(amount / recv_amount, 4),
-                            "window_hours":        CROSS_BANK_ACCEL_WINDOW_HOURS,
-                            "validation_note":     (
-                                "Pattern not present in IBM AML synthetic dataset. "
-                                "Expected strong signal on real UPI/NEFT transaction data."
-                            ),
-                            "interpretation":      (
-                                f"Received Rs.{recv_amount:,.0f} from {recv_bank}, "
-                                f"forwarding Rs.{amount:,.0f} to {send_bank} "
-                                f"within {CROSS_BANK_ACCEL_WINDOW_HOURS}h — "
-                                "inter-bank transit mule pattern"
-                            ),
-                        })
+                            r,
+                            account_from,
+                            "CROSS_BANK_ACCELERATION",
+                            timestamp,
+                            {
+                                "received_from_bank": recv_bank,
+                                "forwarding_to_bank": send_bank,
+                                "received_amount": round(recv_amount, 2),
+                                "forwarded_amount": round(amount, 2),
+                                "passthrough_ratio": round(amount / recv_amount, 4),
+                                "window_hours": CROSS_BANK_ACCEL_WINDOW_HOURS,
+                                "validation_note": (
+                                    "Pattern not present in IBM AML synthetic dataset. "
+                                    "Expected strong signal on real UPI/NEFT transaction data."
+                                ),
+                                "interpretation": (
+                                    f"Received Rs.{recv_amount:,.0f} from {recv_bank}, "
+                                    f"forwarding Rs.{amount:,.0f} to {send_bank} "
+                                    f"within {CROSS_BANK_ACCEL_WINDOW_HOURS}h — "
+                                    "inter-bank transit mule pattern"
+                                ),
+                            },
+                        )
                         detected.append(alert)
-                        _start_cooldown(r, account_from, "CROSS_BANK_ACCELERATION",
-                                        CROSS_BANK_ACCEL_COOLDOWN_HOURS)
+                        _start_cooldown(
+                            r,
+                            account_from,
+                            "CROSS_BANK_ACCELERATION",
+                            CROSS_BANK_ACCEL_COOLDOWN_HOURS,
+                        )
                         break
                 except Exception:
                     pass
@@ -691,7 +832,7 @@ def get_cep_alerts(r: redis.Redis, account_id: str) -> list:
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+    r = redis.Redis(host="localhost", port=6379, decode_responses=True)
     r.ping()
     print("Redis connected -- running CEP engine v2 smoke test\n")
 
@@ -700,22 +841,28 @@ if __name__ == "__main__":
     def evt(acc_from, acc_to, bank_to, amount, minutes_offset, bank_from="TESTBANK"):
         return {
             "account_from": acc_from,
-            "account_to":   acc_to,
-            "bank_from":    bank_from,
-            "bank_to":      bank_to,
-            "amount_paid":  amount,
-            "timestamp":    (base + timedelta(minutes=minutes_offset)).isoformat(),
+            "account_to": acc_to,
+            "bank_from": bank_from,
+            "bank_to": bank_to,
+            "amount_paid": amount,
+            "timestamp": (base + timedelta(minutes=minutes_offset)).isoformat(),
         }
 
     # Clean up all test keys
     patterns_to_clean = [
-        "acct_*:MULE_*", "cep_*:MULE_*",
+        "acct_*:MULE_*",
+        "cep_*:MULE_*",
         "acct_in_daily:MULE_*",
-        "acct_*:SMURF_*", "cep_*:SMURF_*",
-        "acct_*:SOURCE_*", "cep_*:SOURCE_*",
-        "acct_*:SRC_*", "cep_*:SRC_*",
-        "txn_in:MULE_*", "txn_out:MULE_*",
-        "txn_in:SMURF_*", "txn_out:SMURF_*",
+        "acct_*:SMURF_*",
+        "cep_*:SMURF_*",
+        "acct_*:SOURCE_*",
+        "cep_*:SOURCE_*",
+        "acct_*:SRC_*",
+        "cep_*:SRC_*",
+        "txn_in:MULE_*",
+        "txn_out:MULE_*",
+        "txn_in:SMURF_*",
+        "txn_out:SMURF_*",
     ]
     for pattern in patterns_to_clean:
         for key in r.keys(pattern):
@@ -724,34 +871,38 @@ if __name__ == "__main__":
     # Test 1: FAN_OUT_SPIKE -- 10 unique banks in 6h
     print("Test 1: FAN_OUT_SPIKE")
     for i in range(10):
-        result = check_patterns(r, evt("MULE_A", f"DEST_{i}", f"BANK_{i}", 5000, i*10))
-    print("  Detected:", [a['pattern_type'] for a in result])
+        result = check_patterns(
+            r, evt("MULE_A", f"DEST_{i}", f"BANK_{i}", 5000, i * 10)
+        )
+    print("  Detected:", [a["pattern_type"] for a in result])
     print("  Expected: FAN_OUT_SPIKE\n")
 
     # Test 2: FAN_IN -- 5+ distinct senders to same receiver
     print("Test 2: FAN_IN")
     results = []
     for i in range(5):
-        results = check_patterns(r, evt(f"SOURCE_{i}", "MULE_B", "BANK1", 5000, i*5))
-    print("  Detected:", [a['pattern_type'] for a in results])
+        results = check_patterns(r, evt(f"SOURCE_{i}", "MULE_B", "BANK1", 5000, i * 5))
+    print("  Detected:", [a["pattern_type"] for a in results])
     print("  Expected: FAN_IN\n")
 
     # Test 3: GATHER_SCATTER -- 8+ senders AND 8+ receivers same day
     print("Test 3: GATHER_SCATTER")
     for i in range(8):
-        check_patterns(r, evt(f"SRC_{i}", "MULE_C", "BANK1", 5000, i*5))
+        check_patterns(r, evt(f"SRC_{i}", "MULE_C", "BANK1", 5000, i * 5))
     results = []
     for i in range(8):
-        results = check_patterns(r, evt("MULE_C", f"DST_{i}", f"BANK_{i}", 4900, 60+i*5))
-    print("  Detected:", [a['pattern_type'] for a in results])
+        results = check_patterns(
+            r, evt("MULE_C", f"DST_{i}", f"BANK_{i}", 4900, 60 + i * 5)
+        )
+    print("  Detected:", [a["pattern_type"] for a in results])
     print("  Expected: GATHER_SCATTER (and possibly FAN_OUT_SPIKE)\n")
 
     # Test 4: STRUCTURING -- 3+ txns in 900-999 band same day
     print("Test 4: STRUCTURING")
     results = []
     for i in range(3):
-        results = check_patterns(r, evt("MULE_D", f"DEST_{i}", "BANK1", 950, i*30))
-    print("  Detected:", [a['pattern_type'] for a in results])
+        results = check_patterns(r, evt("MULE_D", f"DEST_{i}", "BANK1", 950, i * 30))
+    print("  Detected:", [a["pattern_type"] for a in results])
     print("  Expected: STRUCTURING\n")
 
     # Test 5: SMURFING_RING -- statistical anomaly detection
@@ -759,57 +910,96 @@ if __name__ == "__main__":
     # Normal behavior: MULE_E receives from 2 senders per day.
     # Anomalous day: MULE_E receives from 20 senders (10x normal = ~z=9).
     print("Test 5: SMURFING_RING")
-    from account_baseline import (
-        record_inbound_transaction, rollover_daily_baseline
-    )
+    from account_baseline import record_inbound_transaction, rollover_daily_baseline
+
     # Seed 7 days of normal history: 2 senders per day, ~Rs.10,000 each
     import time as _time
+
     for past_day_offset in range(7, 0, -1):
         past_day = (base - timedelta(days=past_day_offset)).strftime("%Y-%m-%d")
         for s in range(2):
-            record_inbound_transaction(r, "MULE_E",
-                                       f"NORMAL_SENDER_{s}",
-                                       10000.0, past_day)
+            record_inbound_transaction(
+                r, "MULE_E", f"NORMAL_SENDER_{s}", 10000.0, past_day
+            )
         # Roll that day's data into the baseline
-        current_day = (base - timedelta(days=past_day_offset-1)).strftime("%Y-%m-%d")
+        current_day = (base - timedelta(days=past_day_offset - 1)).strftime("%Y-%m-%d")
         rollover_daily_baseline(r, "MULE_E", current_day)
 
     # Now simulate anomalous day: 20 smurfs with wildly different amounts
     smurf_day = base.strftime("%Y-%m-%d")
-    smurf_amounts = [5000, 87000, 12000, 340000, 3000, 95000, 7500,
-                     450000, 22000, 8800, 67000, 1500, 280000, 44000,
-                     9200, 120000, 31000, 6700, 190000, 55000]
+    smurf_amounts = [
+        5000,
+        87000,
+        12000,
+        340000,
+        3000,
+        95000,
+        7500,
+        450000,
+        22000,
+        8800,
+        67000,
+        1500,
+        280000,
+        44000,
+        9200,
+        120000,
+        31000,
+        6700,
+        190000,
+        55000,
+    ]
     smurfing_alerts = []
     for i, amt in enumerate(smurf_amounts):
-        res = check_patterns(r, evt(f"SMURF_{i}", "MULE_E", f"BANK_{i}", amt, i*3))
-        smurfing_alerts.extend([a for a in res if a['pattern_type'] == 'SMURFING_RING'])
+        res = check_patterns(r, evt(f"SMURF_{i}", "MULE_E", f"BANK_{i}", amt, i * 3))
+        smurfing_alerts.extend([a for a in res if a["pattern_type"] == "SMURFING_RING"])
 
     # SMURFING_RING fires when MULE_E receives the anomalous senders
     # (account_to=MULE_E in smurf transactions) not on the final forward
-    all_patterns = list({a['pattern_type'] for a in smurfing_alerts})
-    print("  Detected:", all_patterns if all_patterns else ['SMURFING_RING fires during smurf loop — checking...'])
+    all_patterns = list({a["pattern_type"] for a in smurfing_alerts})
+    print(
+        "  Detected:",
+        (
+            all_patterns
+            if all_patterns
+            else ["SMURFING_RING fires during smurf loop — checking..."]
+        ),
+    )
     if smurfing_alerts:
         a = smurfing_alerts[-1]
-        evidence = a.get('evidence', {})
+        evidence = a.get("evidence", {})
         print(f"  z_in_senders: {evidence.get('z_in_senders', 'N/A')}")
         print(f"  today_senders: {evidence.get('today_senders', 'N/A')}")
         print(f"  interpretation: {str(evidence.get('interpretation', ''))[:120]}")
     print("  Expected: SMURFING_RING")
     print()
 
+    # Test 5b: SIMPLE_CYCLE (batched pipeline version)
+    print("Test 5b: SIMPLE_CYCLE")
+    for key in r.keys("acct_*:CYCLE_*") + r.keys("cep_*:CYCLE_*"):
+        r.delete(key)
+    results = []
+    # A -> B -> C -> A, all same day
+    results = check_patterns(r, evt("CYCLE_A", "CYCLE_B", "BANK1", 10000, 0))
+    check_patterns(r, evt("CYCLE_B", "CYCLE_C", "BANK1", 9500, 5))
+    results = check_patterns(r, evt("CYCLE_C", "CYCLE_A", "BANK1", 9000, 10))
+    print("  Detected:", [a["pattern_type"] for a in results])
+    print("  Expected: SIMPLE_CYCLE\n")
+
     # Test 6: RANDOM_STRUCTURING
     # Validated thresholds: 10+ txns all below Rs.50K AND total >= Rs.5L
     # Use 12 transactions averaging Rs.45K each = total ~Rs.5.4L
     print("Test 6: RANDOM_STRUCTURING")
     import random
+
     random.seed(42)
     results = []
     for i in range(12):
         # Amounts vary between Rs.40K-49K — all below Rs.50K threshold
         # Total: 12 x ~Rs.45K = ~Rs.5.4L — above Rs.5L threshold
         amt = random.uniform(40000, 49000)
-        results = check_patterns(r, evt("MULE_F", f"DEST_F{i}", "BANK1", amt, i*20))
-    print("  Detected:", [a['pattern_type'] for a in results])
+        results = check_patterns(r, evt("MULE_F", f"DEST_F{i}", "BANK1", amt, i * 20))
+    print("  Detected:", [a["pattern_type"] for a in results])
     print("  Expected: RANDOM_STRUCTURING\n")
 
     print("Smoke test complete.")
