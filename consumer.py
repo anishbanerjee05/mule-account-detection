@@ -379,6 +379,11 @@ try:
                 alert_pipe.ltrim("alerts", 0, 4999)
                 alert_pipe.incr("alerts_total_count")
 
+            # TEMPORARY DIAGNOSTIC: bypass CEP entirely to isolate whether
+            # it's still the throughput bottleneck after tonight's pipelining.
+            # REVERT before any real run — this disables all 10 patterns.
+            if False:
+                pass
             # CEP check (per transaction, not batchable — uses rolling state)
             try:
                 from cep_engine import check_patterns
