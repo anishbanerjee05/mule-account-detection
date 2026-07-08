@@ -379,28 +379,29 @@ try:
                 alert_pipe.ltrim("alerts", 0, 4999)
                 alert_pipe.incr("alerts_total_count")
 
-            # TEMPORARY DIAGNOSTIC: bypass CEP entirely to isolate whether
-            # it's still the throughput bottleneck after tonight's pipelining.
-            # REVERT before any real run — this disables all 10 patterns.
-            if False:
-                pass
-            # CEP check (per transaction, not batchable — uses rolling state)
-            try:
-                from cep_engine import check_patterns
-                cep_alerts = check_patterns(r, {
-                    'account_from':  account_id,
-                    'account_to':    str(event['account_to']),
-                    'bank_from':     str(event.get('bank_from', '')),
-                    'bank_to':       s['bank_to'],
-                    'amount_paid':   amount,
-                    'timestamp':     event['timestamp'],
-                })
-                for cep_alert in cep_alerts:
-                    print(f"  >> CEP PATTERN: {cep_alert['pattern_type']} "
-                          f"on {cep_alert['account_id']}")
-            except Exception:
-                pass
-
+           # TEMPORARY DIAGNOSTIC: CEP genuinely disabled below (not a
+            # no-op like the last attempt). Flip to False and re-run to
+            # revert. DO NOT COMMIT this file while True.
+            CEP_DIAGNOSTIC_DISABLE = False
+            if not CEP_DIAGNOSTIC_DISABLE:
+                try:
+                    from cep_engine import check_patterns
+                    cep_alerts = check_patterns(r, {
+                        'account_from':  account_id,
+                        'account_to':    str(event['account_to']),
+                        'bank_from':     str(event.get('bank_from', '')),
+                        'bank_to':       s['bank_to'],
+                        'amount_paid':   amount,
+                        'timestamp':     event['timestamp'],
+                    })
+                    for cep_alert in cep_alerts:
+                        print(f"  >> CEP PATTERN: {cep_alert['pattern_type']} "
+                              f"on {cep_alert['account_id']}")
+                except Exception:
+                    pass
+            else:
+                print("  [CEP DIAGNOSTIC: disabled this run]") if processed == 0 else None
+                
             # Write transaction edge to graph store for hop mapping
             # This builds the inter-bank network that /hops/{account_id}
             # in api.py traverses to show complete money flow chains.
