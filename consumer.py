@@ -356,6 +356,16 @@ try:
                 alert_pipe.set(f"launder_status:{account_id}", "1",
                                ex=86400 * 7)
 
+            # Write to the score: namespace so /hops/{account_id}'s risk
+            # annotation is actually populated. Previously nothing in the
+            # live pipeline ever wrote this key -- only the standalone
+            # /score/account endpoint did, and nothing calls that endpoint
+            # in the real flow.
+            alert_pipe.setex(
+                f"score:{account_id}", 3600,
+                json.dumps({"prob": round(prob, 6), "tier": tier, "flagged": flagged_flag})
+            )
+
             if flagged_flag:
                 flagged += 1
                 alert = {
