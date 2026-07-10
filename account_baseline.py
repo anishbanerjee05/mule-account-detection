@@ -87,38 +87,33 @@ def _welford_std(n: float, M2: float) -> float:
     return math.sqrt(max(variance, 0.0))
 
 
-def _z_score(value: float, mu: float, std: float) -> float:
+def _z_score(value: float, mu: float, std: float) -> Tuple[float, str]:
     """
     Compute z-score: how many standard deviations is value from mean.
 
-    When std is near zero (perfectly consistent history), we use a
-    ratio-based fallback: if value is significantly larger than mu,
-    that IS anomalous even without a finite std. We return a synthetic
-    z-score based on the ratio to make the detection work.
+    Returns (score, method) where method is one of:
+      "zscore"          -- a genuine statistical z-score, (value-mu)/std
+      "ratio_fallback"   -- std is near zero; synthetic score based on
+                            how many times larger value is than mu
+      "zero_baseline"     -- mu is also near zero; no ratio is meaningful
 
-    Example: mu=2 senders/day, std=0, today=20 senders.
-    Ratio = 20/2 = 10x. Synthetic z = 10 - 1 = 9. Clearly anomalous.
+    FIXED (2026-07): callers must use `method` to label output honestly.
+    Previously this returned a single number that got called a
+    "z-score" / "standard deviations" everywhere downstream regardless
+    of which branch produced it -- the ratio_fallback branch could
+    output values like 90+ under low-variance conditions, which is not
+    a real z-score and should never be described as one. The numeric
+    value returned by each branch is UNCHANGED from before; only the
+    labeling contract for callers has changed.
     """
     if std >= 1e-9:
-        return (value - mu) / std
-    # std is near zero — perfectly consistent history
-    # std is near zero — perfectly consistent history
+        return (value - mu) / std, "zscore"
     if mu < 1e-9:
-        # Mean is also zero — any nonzero value is infinitely anomalous
-        return 10.0 if value > 0 else 0.0
-    # Use ratio-based synthetic z-score
-    # KNOWN ISSUE (found 2026-07-02): this is not a real z-score and can
-    # produce statistically nonsensical values (e.g. "90 standard
-    # deviations") when an account's baseline has near-zero variance --
-    # observed on smoke test seed data with identical daily amounts.
-    # Before this feeds any regulator-facing output (STR text, MoF
-    # demo), either cap this at a defensible ceiling or change
-    # downstream interpretation strings to say "ratio-based estimate"
-    # instead of "standard deviations" when this fallback fires.
+        return (10.0 if value > 0 else 0.0), "zero_baseline"
     ratio = value / mu
     if ratio <= 1.0:
-        return 0.0
-    return ratio - 1.0  # e.g. 10x = z=9, 3x = z=2, 2x = z=1
+        return 0.0, "ratio_fallback"
+    return ratio - 1.0, "ratio_fallback"  # e.g. 10x = 9, 3x = 2, 2x = 1
 
 
 # ── Baseline read/write ───────────────────────────────────────────────────────
@@ -325,33 +320,38 @@ def compute_anomaly_scores(r: redis.Redis, account_id: str,
     # Need at least 7 days of history for meaningful z-scores
     sufficient_history = days_observed >= 7
 
-    z_in_senders = _z_score(today["in_senders"], mu_s, std_s)
-    z_in_amount  = _z_score(today["in_amount"],  mu_a, std_a)
-    z_out_count  = _z_score(today["out_count"],  mu_c, std_c)
-    z_out_amount = _z_score(today["out_amount"], mu_o, std_o)
+    z_in_senders, m_in_senders = _z_score(today["in_senders"], mu_s, std_s)
+    z_in_amount,  m_in_amount  = _z_score(today["in_amount"],  mu_a, std_a)
+    z_out_count,  m_out_count  = _z_score(today["out_count"],  mu_c, std_c)
+    z_out_amount, m_out_amount = _z_score(today["out_amount"], mu_o, std_o)
 
-    # Build human-readable interpretation of the highest anomaly
+    def _label(z, method, metric_desc, today_val, mean_val, unit=""):
+        if method == "zscore":
+            return f"{metric_desc}: {today_val}{unit} today vs mean {mean_val:.1f}{unit} (z={z:.1f})"
+        elif method == "ratio_fallback":
+            return (f"{metric_desc}: {today_val}{unit} today vs mean {mean_val:.1f}{unit} "
+                    f"({z+1:.1f}x normal levels — ratio-based estimate, "
+                    f"insufficient historical variance for a statistical z-score)")
+        else:  # zero_baseline
+            return (f"{metric_desc}: {today_val}{unit} today, this account has no prior "
+                    f"history for this metric — no z-score or ratio is meaningful yet")
+
+    # Build human-readable interpretation of the highest anomaly.
+    # Same >= 3.0 trigger threshold as before for ALL methods -- this
+    # fix changes only the wording, never which accounts get flagged.
     anomalies = []
     if z_in_senders >= 3.0:
-        anomalies.append(
-            f"Inbound senders: {today['in_senders']} today vs "
-            f"mean {mu_s:.1f} (z={z_in_senders:.1f})"
-        )
+        anomalies.append(_label(z_in_senders, m_in_senders, "Inbound senders",
+                                 today['in_senders'], mu_s))
     if z_in_amount >= 3.0:
-        anomalies.append(
-            f"Inbound amount: Rs.{today['in_amount']:,.0f} today vs "
-            f"mean Rs.{mu_a:,.0f} (z={z_in_amount:.1f})"
-        )
+        anomalies.append(_label(z_in_amount, m_in_amount, "Inbound amount",
+                                 f"Rs.{today['in_amount']:,.0f}", mu_a))
     if z_out_count >= 3.0:
-        anomalies.append(
-            f"Outbound count: {today['out_count']} today vs "
-            f"mean {mu_c:.1f} (z={z_out_count:.1f})"
-        )
+        anomalies.append(_label(z_out_count, m_out_count, "Outbound count",
+                                 today['out_count'], mu_c))
     if z_out_amount >= 3.0:
-        anomalies.append(
-            f"Outbound amount: Rs.{today['out_amount']:,.0f} today vs "
-            f"mean Rs.{mu_o:,.0f} (z={z_out_amount:.1f})"
-        )
+        anomalies.append(_label(z_out_amount, m_out_amount, "Outbound amount",
+                                 f"Rs.{today['out_amount']:,.0f}", mu_o))
 
     interpretation = (
         " | ".join(anomalies) if anomalies
@@ -363,6 +363,10 @@ def compute_anomaly_scores(r: redis.Redis, account_id: str,
         "in_amount_z":   round(z_in_amount,  3),
         "out_count_z":   round(z_out_count,  3),
         "out_amount_z":  round(z_out_amount, 3),
+        "in_senders_method": m_in_senders,
+        "in_amount_method":  m_in_amount,
+        "out_count_method":  m_out_count,
+        "out_amount_method": m_out_amount,
         "days_observed": days_observed,
         "sufficient_history": sufficient_history,
         "today":  today,
@@ -382,33 +386,42 @@ def compute_anomaly_scores(r: redis.Redis, account_id: str,
 
 def is_anomalous(scores: dict, z_threshold: float = 3.0) -> Tuple[bool, str]:
     """
-    Returns (True, reason) if any z-score exceeds the threshold.
+    Returns (True, reason) if any z-score/ratio exceeds the threshold.
     Returns (False, "") if behavior is within normal range.
 
-    Uses z_threshold=3.0 by default (0.13% probability = genuine anomaly).
+    Uses z_threshold=3.0 by default (0.13% probability = genuine anomaly
+    for real z-scores; used as the same numeric trigger point for the
+    ratio-based fallback too, unchanged from before this fix).
     """
     if not scores.get("sufficient_history", False):
         return False, ""
 
     checks = [
-        ("in_senders_z",  "inbound sender count"),
-        ("in_amount_z",   "inbound amount"),
-        ("out_count_z",   "outbound transaction count"),
-        ("out_amount_z",  "outbound amount"),
+        ("in_senders_z",  "in_senders_method",  "inbound sender count"),
+        ("in_amount_z",   "in_amount_method",   "inbound amount"),
+        ("out_count_z",   "out_count_method",   "outbound transaction count"),
+        ("out_amount_z",  "out_amount_method",  "outbound amount"),
     ]
 
-    max_z    = 0.0
-    max_name = ""
-    for field, name in checks:
-        z = scores.get(field, 0.0)
+    max_z      = 0.0
+    max_name   = ""
+    max_method = "zscore"
+    for zfield, mfield, name in checks:
+        z = scores.get(zfield, 0.0)
         if z > max_z:
-            max_z    = z
-            max_name = name
+            max_z      = z
+            max_name   = name
+            max_method = scores.get(mfield, "zscore")
 
     if max_z >= z_threshold:
-        return True, (
-            f"z={max_z:.2f} on {max_name} — "
-            f"{max_z:.1f} standard deviations above this account's "
-            f"{scores['days_observed']}-day historical mean"
-        )
+        if max_method == "zscore":
+            reason = (f"z={max_z:.2f} on {max_name} — "
+                      f"{max_z:.1f} standard deviations above this account's "
+                      f"{scores['days_observed']}-day historical mean")
+        else:
+            reason = (f"{max_z+1:.1f}x normal levels on {max_name} — "
+                      f"ratio-based estimate (this account's history has "
+                      f"insufficient variance for a statistical z-score), "
+                      f"based on {scores['days_observed']} days of history")
+        return True, reason
     return False, ""
