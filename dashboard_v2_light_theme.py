@@ -9,6 +9,7 @@ import shap
 import math
 import time
 from datetime import datetime
+import requests
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -226,7 +227,7 @@ def stamp_html(tier):
 # ── Sidebar navigation (session_state based -- version-safe) ─────────────────
 PAGES = ["Dashboard", "Live Monitoring", "Flagged Accounts", "Risk Analysis",
          "Hop Map", "Reports", "Settings"]
-NOT_YET_BUILT = set(PAGES) - {"Dashboard"}
+NOT_YET_BUILT = set(PAGES) - {"Dashboard", "Hop Map"}
 
 if "page" not in st.session_state:
     st.session_state.page = "Dashboard"
@@ -333,6 +334,349 @@ if page == "Dashboard":
         else:
             st.markdown('<div class="placeholder-panel">No data yet.</div>', unsafe_allow_html=True)
 
+# ═══════════════════════════════════════════════════════════════════════════
+# HOP MAP PAGE — real network visualization, calls api.py's /hops endpoint.
+# The risk-score annotation on that endpoint was fixed and verified
+# end-to-end earlier tonight (consumer.py now writes score:{id} for every
+# sender account). No new dependency: matplotlib is already required;
+# requests is now explicitly pinned in requirements.txt.
+# ═══════════════════════════════════════════════════════════════════════════
+elif page == "Hop Map":
+    API_BASE_URL = "http://localhost:8000"
+
+    st.markdown('<div class="panel-head">Trace Money-Flow Network</div>', unsafe_allow_html=True)
+    in_col, depth_col, btn_col = st.columns([3, 1, 1])
+    with in_col:
+        hop_account = st.text_input("Account ID", value="", placeholder="e.g. 10042B660",
+                                     label_visibility="collapsed")
+    with depth_col:
+        hop_depth_input = st.number_input("Max depth", min_value=1, max_value=5, value=3,
+                                           label_visibility="collapsed")
+    with btn_col:
+        fetch_clicked = st.button("Trace Network", type="primary", use_container_width=True)
+
+    cluster_toggle = st.checkbox("Cluster low-signal leaf accounts", value=True,
+                                  help="Groups outer-ring accounts with no risk score into a single marker, instead of drawing each one separately.")
+
+    with st.expander("Path mode — trace the route between two specific accounts"):
+        path_col1, path_col2 = st.columns(2)
+        with path_col1:
+            path_target = st.text_input("Target account ID", value="", key="path_target")
+        st.caption("Finds a path from the traced account above to this target, using only the network already loaded. If no path is found, increase max depth and re-trace first.")
+
+    if "hop_map_data" not in st.session_state:
+        st.session_state.hop_map_data = None
+
+    if fetch_clicked and hop_account.strip():
+        try:
+            resp = requests.get(
+                f"{API_BASE_URL}/hops/{hop_account.strip()}",
+                params={"max_depth": int(hop_depth_input), "max_nodes": 50},
+                timeout=8
+            )
+            if resp.status_code == 200:
+                st.session_state.hop_map_data = resp.json()
+            elif resp.status_code == 503:
+                st.session_state.hop_map_data = None
+                st.error("Redis not available (api.py reports 503). Is the backend running?")
+            else:
+                st.session_state.hop_map_data = None
+                st.error(f"API returned {resp.status_code}: {resp.text[:200]}")
+        except requests.exceptions.ConnectionError:
+            st.session_state.hop_map_data = None
+            st.error("Could not reach api.py at localhost:8000. Confirm it's running: `python api.py`")
+        except requests.exceptions.Timeout:
+            st.session_state.hop_map_data = None
+            st.error("Request to /hops timed out after 8s.")
+        except Exception as e:
+            st.session_state.hop_map_data = None
+            st.error(f"Unexpected error: {e}")
+
+    data = st.session_state.hop_map_data
+
+    if not data:
+        st.markdown(
+            '<div class="placeholder-panel">Enter an account ID and click Trace Network '
+            'to visualize its money-flow graph.</div>',
+            unsafe_allow_html=True
+        )
+    else:
+        nodes = data.get("nodes", [])
+        edges = data.get("edges", [])
+        summary = data.get("summary", {})
+
+        root_id = hop_account.strip()
+        direct_connections = len({
+            (e['to_account'] if e['from_account'] == root_id else e['from_account'])
+            for e in edges if e['from_account'] == root_id or e['to_account'] == root_id
+        })
+
+        s1, s2, s3, s4, s5 = st.columns(5)
+        def hop_kpi(col, value, label, style="neutral"):
+            col.markdown(f'<div class="kpi {style}"><div class="val">{value}</div><div class="lbl">{label}</div></div>',
+                        unsafe_allow_html=True)
+        hop_kpi(s1, data.get("total_nodes", 0), "Nodes Traced")
+        hop_kpi(s2, direct_connections, "Direct Connections")
+        hop_kpi(s3, summary.get("bank_count", 0), "Banks Involved")
+        hop_kpi(s4, summary.get("confirmed_fraud_nodes", 0), "Confirmed Fraud", "danger")
+        hop_kpi(s5, f"Rs.{summary.get('total_amount_moved', 0):,.0f}", "Total Moved")
+
+        st.markdown(f"<div style='font-size:0.75rem; color:var(--ink-soft); margin:0.5rem 0 1rem 0;'>"
+                    f"{summary.get('investigation_note', '')}</div>", unsafe_allow_html=True)
+
+        def tier_color(tier):
+            if not tier: return '#9AA7B2'
+            if 'L3' in tier: return '#8C2F2F'
+            if 'L2' in tier: return '#9C6B1D'
+            if 'L1' in tier: return '#3F6B4A'
+            return '#5D7A8C'
+
+        # ── Feature 1: top CEP pattern per node ─────────────────────────────
+        # One Redis call per node (only fires on an explicit trace, not on
+        # every rerun) -- acceptable for a manual investigative action.
+        @st.cache_data(ttl=60)
+        def get_top_pattern(account_id):
+            try:
+                raw = r.lindex(f"cep_alerts:{account_id}", 0)
+                if raw:
+                    return json.loads(raw).get('pattern_type', '')
+            except Exception:
+                pass
+            return ''
+
+        node_patterns = {n['account_id']: get_top_pattern(n['account_id']) for n in nodes}
+
+        # ── Feature 4: cluster low-signal outer-ring leaf accounts ─────────
+        # Only clusters nodes with no risk score, not confirmed fraud, on
+        # the OUTERMOST ring present -- the common case of many receiver-
+        # only accounts with nothing to say about them individually.
+        cluster_map = {}          # account_id -> synthetic cluster id
+        clustered_ids = set()
+        real_nodes = nodes
+        if cluster_toggle and nodes:
+            max_depth_present = max(n['hop_depth'] for n in nodes)
+            candidates = [n for n in nodes
+                          if n['hop_depth'] == max_depth_present
+                          and n.get('risk_score') is None
+                          and not n.get('is_confirmed_fraud')]
+            if len(candidates) >= 4:
+                cluster_id = f"__cluster_{max_depth_present}"
+                for n in candidates:
+                    cluster_map[n['account_id']] = cluster_id
+                    clustered_ids.add(n['account_id'])
+                real_nodes = [n for n in nodes if n['account_id'] not in clustered_ids]
+
+        by_depth = {}
+        for n in real_nodes:
+            by_depth.setdefault(n['hop_depth'], []).append(n)
+        if cluster_map:
+            cluster_depth = max(n['hop_depth'] for n in nodes)
+            by_depth.setdefault(cluster_depth, []).append({
+                'account_id': list(cluster_map.values())[0],
+                'hop_depth': cluster_depth,
+                '__is_cluster': True,
+                '__cluster_count': len(clustered_ids),
+            })
+
+        MIN_ARC_SPACING = 1.15
+        BASE_RING_GAP = 2.2
+        positions = {}
+        prev_radius = 0.0
+        for depth in sorted(by_depth.keys()):
+            group = by_depth[depth]
+            count = len(group)
+            radius = 0.0 if depth == 0 else max(prev_radius + BASE_RING_GAP, (count * MIN_ARC_SPACING) / (2 * math.pi))
+            prev_radius = radius
+            for i, n in enumerate(group):
+                angle = (2 * math.pi * i / count) if count > 0 else 0
+                positions[n['account_id']] = (radius * math.cos(angle), radius * math.sin(angle))
+
+        # remap clustered accounts to their synthetic cluster's position
+        for aid, cid in cluster_map.items():
+            positions[aid] = positions.get(cid, (0, 0))
+
+        max_radius = max((abs(v) for xy in positions.values() for v in xy), default=5) + 1.5
+
+        # ── Feature 3: detect and highlight cycles within the loaded graph ──
+        def find_cycle_edges(node_ids, edge_list):
+            adj = {aid: [] for aid in node_ids}
+            for e in edge_list:
+                fa, ta = e['from_account'], e['to_account']
+                if fa in adj and ta in adj:
+                    adj[fa].append(ta)
+            visited, rec_stack, path_stack = set(), set(), []
+            cyc_edges = set()
+            def dfs(u):
+                visited.add(u); rec_stack.add(u); path_stack.append(u)
+                for v in adj.get(u, []):
+                    if v not in visited:
+                        dfs(v)
+                    elif v in rec_stack and v in path_stack:
+                        idx = path_stack.index(v)
+                        for i in range(idx, len(path_stack) - 1):
+                            cyc_edges.add((path_stack[i], path_stack[i + 1]))
+                        cyc_edges.add((path_stack[-1], v))
+                rec_stack.discard(u); path_stack.pop()
+            for aid in adj:
+                if aid not in visited:
+                    dfs(aid)
+            return cyc_edges
+
+        all_ids = [n['account_id'] for n in nodes]
+        cycle_edges = find_cycle_edges(all_ids, edges)
+
+        # ── Feature: Path mode ──────────────────────────────────────────────
+        path_edges = set()
+        path_found = None
+        if path_target.strip():
+            adj = {}
+            for e in edges:
+                adj.setdefault(e['from_account'], []).append(e['to_account'])
+            start, goal = hop_account.strip(), path_target.strip()
+            queue, seen_bfs, parent = [start], {start}, {}
+            while queue:
+                cur = queue.pop(0)
+                if cur == goal:
+                    break
+                for nxt in adj.get(cur, []):
+                    if nxt not in seen_bfs:
+                        seen_bfs.add(nxt); parent[nxt] = cur; queue.append(nxt)
+            if goal in parent or goal == start:
+                path = [goal]
+                while path[-1] != start:
+                    path.append(parent[path[-1]])
+                path.reverse()
+                path_found = path
+                for i in range(len(path) - 1):
+                    path_edges.add((path[i], path[i + 1]))
+            else:
+                st.warning(f"No path found from {start} to {goal} within the currently loaded {len(nodes)}-node network. Try increasing max depth and re-tracing.")
+
+        fig, ax = plt.subplots(figsize=(10, 9))
+        ax.set_facecolor('#FAFAF8')
+        fig.patch.set_facecolor('white')
+
+        # ── Feature 2: edge thickness by amount (log-scaled) ────────────────
+        for e in edges:
+            fa, ta = e['from_account'], e['to_account']
+            fa_pos = positions.get(cluster_map.get(fa, fa))
+            ta_pos = positions.get(cluster_map.get(ta, ta))
+            if fa_pos and ta_pos:
+                amt = max(e.get('amount', 0), 1)
+                width = min(4.0, max(0.5, math.log10(amt + 1) / 2.2))
+                is_cycle = (fa, ta) in cycle_edges
+                is_path = (fa, ta) in path_edges
+                color = '#9C6B1D' if is_cycle else ('#1B3A63' if is_path else '#B9C2C9')
+                alpha = 0.9 if (is_cycle or is_path) else 0.35
+                zorder = 5 if (is_cycle or is_path) else 2
+                ax.annotate('', xy=ta_pos, xytext=fa_pos,
+                            arrowprops=dict(arrowstyle='-|>', color=color, lw=width,
+                                           alpha=alpha, shrinkA=8, shrinkB=8), zorder=zorder)
+
+        def should_label(n):
+            if n.get('__is_cluster'):
+                return True
+            if n['hop_depth'] == 0:
+                return True
+            if n.get('is_confirmed_fraud'):
+                return True
+            tier = n.get('risk_tier') or ''
+            return 'L2' in tier or 'L3' in tier
+
+        for depth, group in by_depth.items():
+            for n in group:
+                x, y = positions[n['account_id']]
+                if n.get('__is_cluster'):
+                    ax.scatter([x], [y], s=420, c='#D8DEE2', edgecolors='#9AA7B2',
+                              linewidths=1.2, zorder=3, marker='o')
+                    ax.annotate(f"+{n['__cluster_count']}", (x, y), fontsize=9, ha='center',
+                               va='center', color='#4B5A66', fontweight='bold', zorder=4)
+                    continue
+                color = tier_color(n.get('risk_tier'))
+                size = 300 if n['hop_depth'] == 0 else 130
+                edgecolor = '#8C2F2F' if n.get('is_confirmed_fraud') else 'white'
+                edgewidth = 2.2 if n.get('is_confirmed_fraud') else 0.7
+                marker_shape = 's' if n['account_id'] in [ee for pair in path_edges for ee in pair] else 'o'
+                ax.scatter([x], [y], s=size, c=color, edgecolors=edgecolor, linewidths=edgewidth,
+                          zorder=3, marker=marker_shape)
+                if should_label(n):
+                    label = n['account_id'][:9]
+                    bank = n.get('bank', '')
+                    if bank and bank != 'Unknown':
+                        label += f"\nbank:{bank[:8]}"
+                    pattern = node_patterns.get(n['account_id'], '')
+                    if pattern:
+                        label += f"\n{pattern[:12]}"
+                    ax.annotate(label, (x, y), fontsize=6.2, ha='center', va='center',
+                               xytext=(0, -13 if n['hop_depth'] > 0 else -16),
+                               textcoords='offset points', color='#14202B',
+                               fontfamily='monospace', zorder=4, linespacing=1.4)
+
+        # Label the top 5 highest-value edges with their actual amount --
+        # line thickness alone is hard to read precisely.
+        edge_amount_positions = []
+        for e in edges:
+            fa, ta = e['from_account'], e['to_account']
+            fa_pos = positions.get(cluster_map.get(fa, fa))
+            ta_pos = positions.get(cluster_map.get(ta, ta))
+            if fa_pos and ta_pos:
+                edge_amount_positions.append((e.get('amount', 0), fa_pos, ta_pos))
+        edge_amount_positions.sort(key=lambda t: -t[0])
+        for amt, fa_pos, ta_pos in edge_amount_positions[:5]:
+            mx, my = (fa_pos[0] + ta_pos[0]) / 2, (fa_pos[1] + ta_pos[1]) / 2
+            ax.annotate(f"Rs.{amt:,.0f}", (mx, my), fontsize=6, color='#1B3A63',
+                       ha='center', va='center', fontweight='bold', zorder=6,
+                       bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='#D8DEE2', lw=0.4))
+
+        ax.set_xlim(-max_radius, max_radius)
+        ax.set_ylim(-max_radius, max_radius)
+        ax.set_aspect('equal')
+        ax.axis('off')
+        legend_handles = [
+            mpatches.Patch(color='#8C2F2F', label='L3 — Auto Freeze'),
+            mpatches.Patch(color='#9C6B1D', label='L2 — Soft Hold'),
+            mpatches.Patch(color='#3F6B4A', label='L1 — Review'),
+            mpatches.Patch(color='#5D7A8C', label='CLEAR'),
+            mpatches.Patch(color='#9AA7B2', label='No score data'),
+        ]
+        if cycle_edges:
+            legend_handles.append(mpatches.Patch(color='#9C6B1D', label='Detected cycle'))
+        if path_edges:
+            legend_handles.append(mpatches.Patch(color='#1B3A63', label='Traced path'))
+        ax.legend(handles=legend_handles, loc='upper left', fontsize=7, framealpha=0.9)
+
+        st.pyplot(fig)
+        plt.close()
+
+        caption_bits = ["Accounts outlined in dark red are confirmed fraud.",
+                        "Grey nodes have no risk score yet — receiver-only accounts.",
+                        "Edge thickness reflects transaction amount (log scale)."]
+        if cycle_edges:
+            caption_bits.append("Gold edges are part of a detected cycle in this network.")
+        if path_edges:
+            caption_bits.append(f"Navy squares/edges trace the path to {path_target.strip()}.")
+        if cluster_map:
+            caption_bits.append(f"{len(clustered_ids)} low-signal leaf accounts collapsed into one marker — uncheck the box above to see them individually.")
+        st.markdown(f"<div style='font-size:0.68rem; color:var(--ink-soft); margin:-0.5rem 0 1rem 0;'>"
+                    f"{' '.join(caption_bits)}</div>", unsafe_allow_html=True)
+
+        st.markdown('<div class="panel-head">Node Detail</div>', unsafe_allow_html=True)
+        sorted_nodes = sorted(nodes, key=lambda n: (n.get('risk_score') is None, -(n.get('risk_score') or 0)))
+        rows = ""
+        for n in sorted_nodes[:30]:
+            score = n.get('risk_score')
+            score_str = f"{score:.4f}" if score is not None else "—"
+            conf = '<span style="color:var(--danger); font-weight:700;">YES</span>' if n.get('is_confirmed_fraud') else '—'
+            pattern = node_patterns.get(n['account_id'], '') or '—'
+            rows += (f"<tr><td>{n['account_id'][:14]}</td><td style='text-align:right'>{score_str}</td>"
+                     f"<td>{n.get('risk_tier') or '—'}</td><td>{pattern}</td>"
+                     f"<td style='text-align:right'>{n['hop_depth']}</td><td>{conf}</td></tr>")
+        st.markdown(
+            f"""<table class="ledger-table">
+            <tr><th>Account</th><th style="text-align:right">Risk Score</th><th>Tier</th><th>Pattern</th><th style="text-align:right">Hop Depth</th><th>Confirmed</th></tr>
+            {rows}</table>""", unsafe_allow_html=True
+        )
+        
 # ═══════════════════════════════════════════════════════════════════════════
 # PLACEHOLDER PAGES — visual shell only, matches approved mockup.
 # Built one at a time, per instruction. Say which one is next.
