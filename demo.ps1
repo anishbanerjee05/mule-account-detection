@@ -137,7 +137,7 @@ for ($i = 1; $i -le $consumers; $i++) {
 Start-Sleep -Seconds 5
 
 Section "Phase 5/5 - Starting dashboard"
-Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$projectPath'; & '$venv'; streamlit run dashboard.py" -WindowStyle Normal
+Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd '$projectPath'; & '$venv'; streamlit run dashboard_v2_light_theme.py" -WindowStyle Normal
 Start-Sleep -Seconds 4
 Start-Process "http://localhost:8501"
 Write-Host "  Dashboard at http://localhost:8501" -ForegroundColor Green
