@@ -827,6 +827,17 @@ def get_hop_map(account_id: str, max_depth: int = 3, max_nodes: int = 50):
     max_depth = min(max_depth, 5)  # hard cap at 5 hops
     max_nodes = min(max_nodes, 100)  # hard cap at 100 nodes
 
+    # Reserve budget across depths. Previously, a high-fan-out root account
+    # (e.g. 49 direct connections) could consume the ENTIRE max_nodes budget
+    # at depth 1 alone, before the BFS ever got a chance to explore depth 2+
+    # -- meaning the visualization would always show a flat single-hop star
+    # for such accounts, never revealing further laundering hops that
+    # genuinely exist deeper in the graph. Capping how many depth-1 nodes
+    # get enqueued in the first place guarantees remaining budget survives
+    # for depth 2+.
+    DEPTH_1_CAP = min(30, max(max_nodes - 10, 10))
+    depth1_enqueued = 0
+
     visited_nodes = {}  # account_id -> HopNode
     all_edges = []  # list of HopEdge
 
@@ -912,9 +923,13 @@ def get_hop_map(account_id: str, max_depth: int = 3, max_nodes: int = 50):
                         )
                     )
 
-                    if to_acc not in seen and len(visited_nodes) < max_nodes:
+                    new_depth = depth + 1
+                    depth_ok = (new_depth > 1) or (depth1_enqueued < DEPTH_1_CAP)
+                    if to_acc not in seen and len(visited_nodes) < max_nodes and depth_ok:
                         seen.add(to_acc)
-                        queue.append((to_acc, depth + 1, "forward"))
+                        if new_depth == 1:
+                            depth1_enqueued += 1
+                        queue.append((to_acc, new_depth, "forward"))
                 except Exception:
                     pass
 
@@ -945,9 +960,13 @@ def get_hop_map(account_id: str, max_depth: int = 3, max_nodes: int = 50):
                             )
                         )
 
-                    if from_acc not in seen and len(visited_nodes) < max_nodes:
+                    new_depth = depth + 1
+                    depth_ok = (new_depth > 1) or (depth1_enqueued < DEPTH_1_CAP)
+                    if from_acc not in seen and len(visited_nodes) < max_nodes and depth_ok:
                         seen.add(from_acc)
-                        queue.append((from_acc, depth + 1, "backward"))
+                        if new_depth == 1:
+                            depth1_enqueued += 1
+                        queue.append((from_acc, new_depth, "backward"))
                 except Exception:
                     pass
 
