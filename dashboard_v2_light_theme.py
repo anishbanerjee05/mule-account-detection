@@ -15,19 +15,7 @@ warnings.filterwarnings('ignore')
 
 # ═══════════════════════════════════════════════════════════════════════════
 # NEW LIGHT-THEME UI — built from the reviewed UI/UX mockup
-# (MuleDetection_UIUX_Mockup.html). This file replaces dashboard.py's
-# single-page layout with a multipage shell using session_state-based
-# navigation (not st.navigation/st.Page — requirements.txt does not pin
-# a Streamlit version, and st.navigation needs 1.36+; session_state
-# navigation works on any version, so this avoids an unverified
-# assumption).
-#
-# STATUS: Dashboard page is fully wired to real Redis/model data,
-# identical underlying logic to the existing dashboard.py. The other
-# six pages (Live Monitoring, Flagged Accounts, Risk Analysis, Hop Map,
-# Reports, Settings) are placeholder shells matching the approved
-# mockup's visual language, clearly labeled as not-yet-implemented --
-# built one at a time per instruction, not all at once.
+# (MuleDetection_UIUX_Mockup.html).
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.set_page_config(
@@ -37,11 +25,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ── Design tokens (from the approved mockup) ──────────────────────────────────
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
-
     :root {
         --paper:#F5F6F4; --paper-raised:#FFFFFF; --ink:#14202B; --ink-soft:#4B5A66;
         --line:#D8DEE2; --line-strong:#B9C2C9;
@@ -54,15 +40,10 @@ st.markdown("""
         background-color: var(--paper) !important;
         color: var(--ink) !important;
     }
-    [data-testid="stAppViewContainer"] * , .block-container * {
-        color: var(--ink);
-    }
+    [data-testid="stAppViewContainer"] * , .block-container * { color: var(--ink); }
     .main { background-color: var(--paper); }
     .block-container { padding: 1rem 1.5rem 2rem 1.5rem; max-width: 100%; }
-
     h1, h2, h3, .page-title { font-family: 'Source Serif 4', serif !important; color: var(--ink); }
-
-    /* ── Sidebar (ledger-navy, matches mockup) ── */
     section[data-testid="stSidebar"] { background: var(--navy-deep); }
     section[data-testid="stSidebar"] * { color: #DCE4EA !important; }
     section[data-testid="stSidebar"] .stButton button {
@@ -72,8 +53,6 @@ st.markdown("""
     }
     section[data-testid="stSidebar"] .stButton button:hover { background: rgba(255,255,255,0.06); color: #fff !important; }
     section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,0.12) !important; }
-
-    /* ── Top status pill ── */
     .status-pill {
         display:inline-flex; align-items:center; gap:7px; font-size:0.78rem;
         padding:5px 11px; border:1px solid var(--line-strong); border-radius:2px; background:#F0FBF3;
@@ -82,8 +61,6 @@ st.markdown("""
     .status-dot.live { background: var(--safe); }
     .status-dot.warn { background: var(--warn); }
     .status-dot.stale { background: var(--danger); }
-
-    /* ── KPI cards (ledger style, not floating) ── */
     .kpi { background:var(--paper-raised); border:1px solid var(--line); border-top:3px solid var(--navy);
            padding:0.9rem 1rem; border-radius:2px; text-align:left; }
     .kpi.danger { border-top-color: var(--danger); }
@@ -91,12 +68,8 @@ st.markdown("""
     .kpi.safe   { border-top-color: var(--safe); }
     .kpi .val   { font-family:'IBM Plex Mono', monospace; font-size:1.7rem; font-weight:600; color:var(--ink); }
     .kpi .lbl   { font-size:0.65rem; text-transform:uppercase; letter-spacing:0.08em; color:var(--ink-soft); margin-top:4px; }
-
-    /* ── Panels ── */
     .panel-head { font-family:'Source Serif 4', serif; font-size:0.95rem; font-weight:600;
                   color:var(--ink); border-bottom:1px solid var(--line); padding-bottom:0.4rem; margin-bottom:0.7rem; }
-
-    /* ── Ledger table ── */
     .ledger-table { width:100%; border-collapse:collapse; font-size:0.78rem; }
     .ledger-table th {
         text-align:left; font-size:0.62rem; text-transform:uppercase; letter-spacing:0.06em;
@@ -104,8 +77,6 @@ st.markdown("""
     }
     .ledger-table td { padding:0.55rem 0.7rem; border-bottom:1px solid var(--line); font-family:'IBM Plex Mono', monospace; color:var(--ink); }
     .ledger-table tr:hover td { background:#FAFAF8; }
-
-    /* ── Stamp badge (signature element, from mockup) ── */
     .stamp {
         display:inline-flex; align-items:center; justify-content:center; width:44px; height:44px;
         border:2px dashed currentColor; border-radius:50%; transform:rotate(-8deg);
@@ -117,23 +88,15 @@ st.markdown("""
     .stamp.l1 { color: var(--safe); }
     .badge-pattern { background:#E7E9EC; color:var(--navy-deep); border:1px solid var(--line-strong);
                       font-size:0.62rem; padding:2px 6px; border-radius:2px; font-family:'IBM Plex Mono', monospace; }
-
     .placeholder-panel {
         border:1px dashed var(--line-strong); border-radius:2px; padding:3rem 2rem; text-align:center;
         color:var(--ink-soft); background:repeating-linear-gradient(45deg, #FAFAF8, #FAFAF8 10px, #F3F4F2 10px, #F3F4F2 20px);
     }
     #MainMenu { visibility: hidden; }
     footer { visibility: hidden; }
-    /* Header intentionally left untouched -- previous attempts to hide
-       parts of it via guessed data-testid selectors were unconfirmed
-       and may have been wrong for this Streamlit version. Top
-       navigation buttons above no longer depend on the sidebar's
-       native collapse/reopen control, so there's no reason to keep
-       risking that control by touching the header at all. */
 </style>
 """, unsafe_allow_html=True)
 
-# ── Cached resources (unchanged from dashboard.py) ────────────────────────────
 @st.cache_resource
 def get_redis():
     return redis.Redis(host='localhost', port=6379, decode_responses=True)
@@ -154,7 +117,6 @@ model, scaler, config, explainer = load_models()
 
 L3_THRESHOLD, L2_THRESHOLD, L1_THRESHOLD = 0.70, 0.50, 0.30
 
-# ── Data functions (identical logic to dashboard.py) ─────────────────────────
 def get_alerts(n=1000):
     raw = r.lrange('alerts', 0, n - 1)
     alerts = []
@@ -175,8 +137,6 @@ def get_stats(alerts):
     l3 = sum(1 for a in alerts if 'L3' in a.get('tier', ''))
     l2 = sum(1 for a in alerts if 'L2' in a.get('tier', '') and 'L3' not in a.get('tier', ''))
     l1 = sum(1 for a in alerts if 'L1' in a.get('tier', '') and 'L2' not in a.get('tier', '') and 'L3' not in a.get('tier', ''))
-    # NOTE: r.keys() is O(N) and blocks Redis -- same known tradeoff as
-    # dashboard.py. Not re-solved here; see Progress Report II Section 5.
     confirmed = len(r.keys("launder_status:*"))
     gnn = sum(1 for a in alerts if a.get('has_gnn_embed'))
     gnn_pct = int(gnn / len(alerts) * 100) if len(alerts) > 0 else 0
@@ -224,10 +184,9 @@ def stamp_html(tier):
         return '<span class="stamp l1">L1<br>REVIEW</span>'
     return '—'
 
-# ── Sidebar navigation (session_state based -- version-safe) ─────────────────
 PAGES = ["Dashboard", "Live Monitoring", "Flagged Accounts", "Risk Analysis",
          "Hop Map", "Reports", "Settings"]
-NOT_YET_BUILT = set(PAGES) - {"Dashboard", "Hop Map"}
+NOT_YET_BUILT = set(PAGES) - {"Dashboard", "Hop Map", "Live Monitoring"}
 
 if "page" not in st.session_state:
     st.session_state.page = "Dashboard"
@@ -240,14 +199,10 @@ with st.sidebar:
         if st.button(pg, key=f"nav_{pg}", use_container_width=True):
             st.session_state.page = pg
     st.markdown("---")
-    st.caption("v0.2 — UI redesign in progress\nPages beyond Dashboard are placeholders")
+    st.caption("v0.3 — UI redesign in progress\nPages beyond Dashboard/Hop Map/Live Monitoring are placeholders")
 
 page = st.session_state.page
 
-# ── Top navigation (redundant with sidebar, always visible) ──────────────────
-# This exists specifically so closing/losing the sidebar can never trap
-# navigation again -- it does not depend on Streamlit's collapse/reopen
-# control working correctly.
 nav_cols = st.columns(len(PAGES))
 for i, pg in enumerate(PAGES):
     with nav_cols[i]:
@@ -257,7 +212,6 @@ for i, pg in enumerate(PAGES):
             st.rerun()
 st.markdown("<hr style='margin:0.5rem 0 1rem 0; border-color:var(--line);'>", unsafe_allow_html=True)
 
-# ── Top bar ────────────────────────────────────────────────────────────────
 alerts = get_alerts(1000)
 status_label, status_cls = get_system_status(alerts)
 top_l, top_r = st.columns([4, 1])
@@ -268,9 +222,6 @@ with top_r:
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# DASHBOARD PAGE — fully wired, real data
-# ═══════════════════════════════════════════════════════════════════════════
 if page == "Dashboard":
     total, l3, l2, l1, confirmed, gnn_pct = get_stats(alerts)
     deduped, counts = deduplicate_alerts(alerts)
@@ -334,13 +285,82 @@ if page == "Dashboard":
         else:
             st.markdown('<div class="placeholder-panel">No data yet.</div>', unsafe_allow_html=True)
 
-# ═══════════════════════════════════════════════════════════════════════════
-# HOP MAP PAGE — real network visualization, calls api.py's /hops endpoint.
-# The risk-score annotation on that endpoint was fixed and verified
-# end-to-end earlier tonight (consumer.py now writes score:{id} for every
-# sender account). No new dependency: matplotlib is already required;
-# requests is now explicitly pinned in requirements.txt.
-# ═══════════════════════════════════════════════════════════════════════════
+elif page == "Live Monitoring":
+    left, right = st.columns([3, 2])
+
+    with left:
+        st.markdown('<div class="panel-head">Live Transaction Feed</div>', unsafe_allow_html=True)
+        if not alerts:
+            st.markdown('<div class="placeholder-panel">No alerts yet. Start the producer and consumer to see live traffic.</div>', unsafe_allow_html=True)
+        else:
+            rows = ""
+            for a in alerts[:40]:
+                aid = a.get('account_id', '')
+                tier = a.get('tier', 'CLEAR')
+                prob = a.get('probability', 0)
+                ts = a.get('timestamp', '')[:19].replace('T', ' ')
+                gnn = 'Yes' if a.get('has_gnn_embed') else 'No'
+                cep = get_cep_badge_html(aid)
+                rows += (f"<tr><td>{ts}</td><td>{aid[:14]}</td>"
+                         f"<td style='text-align:right'>{a.get('amount', 0):,.0f}</td>"
+                         f"<td style='text-align:right'>{prob:.4f}</td>"
+                         f"<td>{stamp_html(tier)}</td><td>{cep}</td><td>{gnn}</td></tr>")
+            st.markdown(
+                f"""<table class="ledger-table">
+                <tr><th>Time</th><th>Account</th><th style="text-align:right">Amount</th>
+                <th style="text-align:right">Score</th><th>Tier</th><th>Pattern</th><th>GNN</th></tr>
+                {rows}</table>""", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:0.68rem; color:var(--ink-soft); margin-top:0.5rem;'>"
+                        f"Showing the {min(40, len(alerts))} most recent entries from a {len(alerts)}-entry buffer.</div>",
+                        unsafe_allow_html=True)
+
+    with right:
+        st.markdown('<div class="panel-head">Pipeline Health</div>', unsafe_allow_html=True)
+
+        import subprocess
+        lag_display = "Unavailable"
+        partition_display = "Unavailable"
+        try:
+            result = subprocess.run(
+                ["docker", "exec", "kafka", "kafka-consumer-groups",
+                 "--bootstrap-server", "localhost:9092",
+                 "--describe", "--group", "mule-detector-prod"],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode == 0:
+                lines = [l for l in result.stdout.splitlines() if l.strip() and not l.startswith("GROUP")]
+                active_rows = [l for l in lines if "rdkafka-" in l]
+                if active_rows:
+                    total_lag = sum(int(l.split()[4]) for l in active_rows if l.split()[4].lstrip('-').isdigit())
+                    partition_display = f"{len(active_rows)} / 4 assigned"
+                    lag_display = f"{total_lag:,}"
+        except Exception:
+            pass
+
+        st.markdown(f'<div class="kpi"><div class="val">{lag_display}</div><div class="lbl">Consumer Lag (Active Topic)</div></div>',
+                    unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(f'<div class="kpi"><div class="val">{partition_display}</div><div class="lbl">Kafka Partitions Assigned</div></div>',
+                    unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        gnn_status, gnn_cls = "Unknown", "stale"
+        try:
+            gnn_resp = requests.get("http://localhost:8002/stats", timeout=2)
+            if gnn_resp.status_code == 200:
+                gnn_data = gnn_resp.json()
+                if gnn_data.get("persistent_store_loaded"):
+                    gnn_status, gnn_cls = "Healthy", "live"
+                else:
+                    gnn_status, gnn_cls = "Loaded, store not ready", "warn"
+        except requests.exceptions.RequestException:
+            gnn_status, gnn_cls = "Unreachable", "stale"
+        st.markdown(f'<div class="kpi {"safe" if gnn_cls=="live" else ("warn" if gnn_cls=="warn" else "danger")}">'
+                    f'<div class="val">{gnn_status}</div><div class="lbl">GNN Service</div></div>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.caption("Consumer lag and partition data reads directly from Kafka via `docker exec` -- if Docker isn't reachable this will show 'Unavailable', not a guessed number.")
+
 elif page == "Hop Map":
     API_BASE_URL = "http://localhost:8000"
 
@@ -431,9 +451,6 @@ elif page == "Hop Map":
             if 'L1' in tier: return '#3F6B4A'
             return '#5D7A8C'
 
-        # ── Feature 1: top CEP pattern per node ─────────────────────────────
-        # One Redis call per node (only fires on an explicit trace, not on
-        # every rerun) -- acceptable for a manual investigative action.
         @st.cache_data(ttl=60)
         def get_top_pattern(account_id):
             try:
@@ -446,11 +463,7 @@ elif page == "Hop Map":
 
         node_patterns = {n['account_id']: get_top_pattern(n['account_id']) for n in nodes}
 
-        # ── Feature 4: cluster low-signal outer-ring leaf accounts ─────────
-        # Only clusters nodes with no risk score, not confirmed fraud, on
-        # the OUTERMOST ring present -- the common case of many receiver-
-        # only accounts with nothing to say about them individually.
-        cluster_map = {}          # account_id -> synthetic cluster id
+        cluster_map = {}
         clustered_ids = set()
         real_nodes = nodes
         if cluster_toggle and nodes:
@@ -491,13 +504,11 @@ elif page == "Hop Map":
                 angle = (2 * math.pi * i / count) if count > 0 else 0
                 positions[n['account_id']] = (radius * math.cos(angle), radius * math.sin(angle))
 
-        # remap clustered accounts to their synthetic cluster's position
         for aid, cid in cluster_map.items():
             positions[aid] = positions.get(cid, (0, 0))
 
         max_radius = max((abs(v) for xy in positions.values() for v in xy), default=5) + 1.5
 
-        # ── Feature 3: detect and highlight cycles within the loaded graph ──
         def find_cycle_edges(node_ids, edge_list):
             adj = {aid: [] for aid in node_ids}
             for e in edge_list:
@@ -525,7 +536,6 @@ elif page == "Hop Map":
         all_ids = [n['account_id'] for n in nodes]
         cycle_edges = find_cycle_edges(all_ids, edges)
 
-        # ── Feature: Path mode ──────────────────────────────────────────────
         path_edges = set()
         path_found = None
         if path_target.strip():
@@ -556,7 +566,6 @@ elif page == "Hop Map":
         ax.set_facecolor('#FAFAF8')
         fig.patch.set_facecolor('white')
 
-        # ── Feature 2: edge thickness by amount (log-scaled) ────────────────
         for e in edges:
             fa, ta = e['from_account'], e['to_account']
             fa_pos = positions.get(cluster_map.get(fa, fa))
@@ -612,8 +621,6 @@ elif page == "Hop Map":
                                textcoords='offset points', color='#14202B',
                                fontfamily='monospace', zorder=4, linespacing=1.4)
 
-        # Label the top 5 highest-value edges with their actual amount --
-        # line thickness alone is hard to read precisely.
         edge_amount_positions = []
         for e in edges:
             fa, ta = e['from_account'], e['to_account']
@@ -676,11 +683,7 @@ elif page == "Hop Map":
             <tr><th>Account</th><th style="text-align:right">Risk Score</th><th>Tier</th><th>Pattern</th><th style="text-align:right">Hop Depth</th><th>Confirmed</th></tr>
             {rows}</table>""", unsafe_allow_html=True
         )
-        
-# ═══════════════════════════════════════════════════════════════════════════
-# PLACEHOLDER PAGES — visual shell only, matches approved mockup.
-# Built one at a time, per instruction. Say which one is next.
-# ═══════════════════════════════════════════════════════════════════════════
+
 elif page in NOT_YET_BUILT:
     st.markdown(
         f"""<div class="placeholder-panel">
@@ -690,10 +693,9 @@ elif page in NOT_YET_BUILT:
         </div>""", unsafe_allow_html=True
     )
 
-# ── Footer ────────────────────────────────────────────────────────────────────
 st.markdown(
     f"<div style='text-align:right; font-size:0.65rem; color:var(--ink-soft); margin-top:2rem; "
     f"padding-top:0.5rem; border-top:1px solid var(--line);'>"
-    f"Last updated: {datetime.now().strftime('%H:%M:%S')} &nbsp;|&nbsp; Mule Account Detection System v0.2 (UI redesign)"
+    f"Last updated: {datetime.now().strftime('%H:%M:%S')} &nbsp;|&nbsp; Mule Account Detection System v0.3 (UI redesign)"
     f"</div>", unsafe_allow_html=True
 )
