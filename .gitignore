@@ -1,29 +1,35 @@
-﻿venv/
+﻿# --- Environments ---
+venv/
 venv311/
-paysim.csv/
-*.csv
+.vscode/
 __pycache__/
 .ipynb_checkpoints/
-*.pkl
-*.json
-*.pt
-*.db
-ibm_aml_small.csv
-feature_matrix.csv
-feature_matrix_v2.csv
-ibm_feature_matrix.csv
-xgb_final_model.pkl
-xgb_ibm_final_model.pkl
-scaler.pkl
-xgb_hybrid_model.pkl
-scaler_hybrid.pkl
-active_topic.txt
-.vscode/
-embeddings_store.parquet
 
+# --- Datasets (never commit; see README "Datasets") ---
+paysim.csv/
+*.csv
+
+# --- Generated data and caches ---
+*.db
+*.parquet
+active_topic.txt
 logs/
 ram_log.txt
 producer_log.txt
-
 monitor_ram_quick.ps1
 quick_redis_latency_test.py
+
+# --- Models, configs and artifacts: ignored by default ---
+*.pkl
+*.pt
+*.json
+
+# --- Exceptions: active pipeline artifacts ARE committed ---
+!best_gnn_model.pt
+!xgb_hybrid_model.pkl
+!scaler_hybrid.pkl
+!hybrid_model_config.json
+
+# --- Exceptions: legacy configs, tracked for reference ---
+!model_config.json
+!ibm_model_config.json
