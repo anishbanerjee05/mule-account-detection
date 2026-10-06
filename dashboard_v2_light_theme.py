@@ -161,6 +161,21 @@ def get_cep_badge_html(aid):
     except Exception:
         return "—"
 
+@st.cache_data(ttl=60)
+def get_top_pattern(account_id):
+    # MOVED to module scope -- previously defined only inside the Hop Map
+    # branch, so Flagged Accounts' CSV export (which checked for its
+    # existence via 'get_top_pattern' in dir()) always found it absent
+    # and silently wrote an empty pattern column. Now both pages share
+    # this one definition instead of Hop Map having its own local copy.
+    try:
+        raw = r.lindex(f"cep_alerts:{account_id}", 0)
+        if raw:
+            return json.loads(raw).get('pattern_type', '')
+    except Exception:
+        pass
+    return ''
+
 def get_system_status(alerts):
     if not alerts:
         return "NO DATA", "stale"
@@ -186,7 +201,7 @@ def stamp_html(tier):
 
 PAGES = ["Dashboard", "Live Monitoring", "Flagged Accounts", "Risk Analysis",
          "Hop Map", "Reports", "Settings"]
-NOT_YET_BUILT = set(PAGES) - {"Dashboard", "Hop Map", "Live Monitoring"}
+NOT_YET_BUILT = set(PAGES) - {"Dashboard", "Hop Map", "Live Monitoring", "Flagged Accounts"}
 
 if "page" not in st.session_state:
     st.session_state.page = "Dashboard"
@@ -331,7 +346,11 @@ elif page == "Live Monitoring":
                 lines = [l for l in result.stdout.splitlines() if l.strip() and not l.startswith("GROUP")]
                 active_rows = [l for l in lines if "rdkafka-" in l]
                 if active_rows:
-                    total_lag = sum(int(l.split()[4]) for l in active_rows if l.split()[4].lstrip('-').isdigit())
+                    # FIXED: was reading split()[4] (LOG-END-OFFSET), not
+                    # the actual LAG column. Column order is GROUP(0)
+                    # TOPIC(1) PARTITION(2) CURRENT-OFFSET(3)
+                    # LOG-END-OFFSET(4) LAG(5).
+                    total_lag = sum(int(l.split()[5]) for l in active_rows if l.split()[5].lstrip('-').isdigit())
                     partition_display = f"{len(active_rows)} / 4 assigned"
                     lag_display = f"{total_lag:,}"
         except Exception:
@@ -451,16 +470,8 @@ elif page == "Hop Map":
             if 'L1' in tier: return '#3F6B4A'
             return '#5D7A8C'
 
-        @st.cache_data(ttl=60)
-        def get_top_pattern(account_id):
-            try:
-                raw = r.lindex(f"cep_alerts:{account_id}", 0)
-                if raw:
-                    return json.loads(raw).get('pattern_type', '')
-            except Exception:
-                pass
-            return ''
-
+        # get_top_pattern is now module-scope (see top of file) -- removed
+        # the local duplicate that used to live here.
         node_patterns = {n['account_id']: get_top_pattern(n['account_id']) for n in nodes}
 
         cluster_map = {}
@@ -683,6 +694,102 @@ elif page == "Hop Map":
             <tr><th>Account</th><th style="text-align:right">Risk Score</th><th>Tier</th><th>Pattern</th><th style="text-align:right">Hop Depth</th><th>Confirmed</th></tr>
             {rows}</table>""", unsafe_allow_html=True
         )
+
+elif page == "Flagged Accounts":
+    deduped, counts = deduplicate_alerts(alerts)
+
+    st.markdown('<div class="panel-head">All Flagged Accounts</div>', unsafe_allow_html=True)
+    f1, f2, f3 = st.columns([2, 1, 1])
+    with f1:
+        search_term = st.text_input("Search account ID", value="", placeholder="e.g. 10042B660",
+                                     label_visibility="collapsed")
+    with f2:
+        tier_filter = st.selectbox("Tier", ["All tiers", "L3 — Auto Freeze", "L2 — Soft Hold",
+                                             "L1 — Review", "CLEAR"], label_visibility="collapsed")
+    with f3:
+        # Pattern options built from what's actually present in the current
+        # alert set, not a hardcoded list -- avoids a filter dropdown that
+        # offers patterns which have never fired and hides ones that have.
+        # FIXED: was calling get_cep_badge_html() twice per account (once
+        # to check != "—", once to parse the pattern name out of its HTML)
+        # -- 2x Redis round-trips per flagged account on every rerun, just
+        # to populate a dropdown. Now uses get_top_pattern() (module-scope,
+        # cached) once per account, no string-parsing of HTML needed.
+        account_patterns = {aid: get_top_pattern(aid) for aid in deduped} if deduped else {}
+        present_patterns = sorted({p for p in account_patterns.values() if p})
+        pattern_filter = st.selectbox("Pattern", ["All patterns"] + present_patterns,
+                                       label_visibility="collapsed")
+
+    if not deduped:
+        st.markdown('<div class="placeholder-panel">No flagged accounts yet. Start the producer and consumer to begin real-time detection.</div>', unsafe_allow_html=True)
+    else:
+        sorted_accounts = sorted(deduped.items(), key=lambda x: x[1].get('probability', 0), reverse=True)
+
+        filtered = []
+        for aid, a in sorted_accounts:
+            if search_term.strip() and search_term.strip().lower() not in aid.lower():
+                continue
+            tier = a.get('tier', 'CLEAR')
+            if tier_filter != "All tiers":
+                # Match on the tier label prefix (L3/L2/L1/CLEAR) since
+                # stored tier strings and filter labels aren't byte-identical
+                tier_key = tier_filter.split(" ")[0]
+                if tier_key not in tier and not (tier_key == "CLEAR" and tier == "CLEAR"):
+                    continue
+            if pattern_filter != "All patterns":
+                # FIXED: was matching against get_cep_badge_html()'s HTML
+                # output (inconsistent with what the dropdown above now
+                # populates from). Now matches the same account_patterns
+                # dict the dropdown was built from -- one source of truth.
+                if account_patterns.get(aid, '') != pattern_filter:
+                    continue
+            filtered.append((aid, a))
+
+        st.markdown(f"<div style='font-size:0.72rem; color:var(--ink-soft); margin-bottom:0.5rem;'>"
+                    f"Showing {len(filtered)} of {len(sorted_accounts)} unique flagged accounts.</div>",
+                    unsafe_allow_html=True)
+
+        if not filtered:
+            st.markdown('<div class="placeholder-panel">No accounts match the current search/filter.</div>', unsafe_allow_html=True)
+        else:
+            rows = ""
+            for aid, a in filtered[:100]:
+                tier = a.get('tier', 'CLEAR')
+                prob = a.get('probability', 0)
+                cep = get_cep_badge_html(aid)
+                conf = a.get('account_laundering', False) or a.get('is_laundering', 0) == 1
+                conf_cell = '<span style="color:var(--danger); font-weight:700;">YES</span>' if conf else '—'
+                cnt = counts.get(aid, 1)
+                rows += (f"<tr><td>{aid[:14]}</td><td style='text-align:right'>{prob:.4f}</td>"
+                         f"<td>{stamp_html(tier)}</td><td>{cep}</td>"
+                         f"<td style='text-align:right'>{a.get('total_txn', '—')}</td>"
+                         f"<td style='text-align:right'>{a.get('fan_out', '—')}</td>"
+                         f"<td style='text-align:right'>{cnt}</td><td>{conf_cell}</td></tr>")
+            st.markdown(
+                f"""<table class="ledger-table">
+                <tr><th>Account</th><th style="text-align:right">Score</th><th>Tier</th><th>Pattern</th>
+                <th style="text-align:right">Txns</th><th style="text-align:right">Fan-Out</th>
+                <th style="text-align:right">Alerts</th><th>Confirmed</th></tr>
+                {rows}</table>""", unsafe_allow_html=True)
+            if len(filtered) > 100:
+                st.caption(f"Showing first 100 of {len(filtered)} matching accounts. Narrow your search/filter to see more specific results.")
+
+            # CSV export of the FILTERED set, not the full unfiltered list --
+            # exporting exactly what's on screen, not a surprise full dump.
+            import io, csv
+            csv_buf = io.StringIO()
+            writer = csv.writer(csv_buf)
+            writer.writerow(["account_id", "score", "tier", "pattern", "total_txn", "fan_out", "alert_count", "confirmed_laundering"])
+            for aid, a in filtered:
+                writer.writerow([
+                    aid, a.get('probability', 0), a.get('tier', 'CLEAR'),
+                    get_top_pattern(aid),  # FIXED: was 'get_top_pattern(aid) if in dir() else ""' -- always empty before, since the function only existed inside Hop Map's local scope
+                    a.get('total_txn', ''), a.get('fan_out', ''), counts.get(aid, 1),
+                    a.get('account_laundering', False) or a.get('is_laundering', 0) == 1
+                ])
+            st.download_button("Export filtered results (CSV)", csv_buf.getvalue(),
+                               file_name=f"flagged_accounts_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                               mime="text/csv")
 
 elif page in NOT_YET_BUILT:
     st.markdown(
