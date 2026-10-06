@@ -51,12 +51,24 @@ app = FastAPI(title="GNN Embedding Microservice", version="1.0")
 # -- Load model and Redis ------------------------------------------------------
 print("Loading GNN model...")
 model = MuleGNN()
-state = torch.load('best_gnn_model.pt', map_location='cpu')
+state = torch.load('best_gnn_model.pt', map_location='cpu', weights_only=True)
 
-# Filter only the weights our simplified forward pass uses
-own_keys = set(model.state_dict().keys())
-filtered = {k: v for k, v in state.items() if k in own_keys}
-model.load_state_dict(filtered, strict=False)
+# The saved weights come from PyG GCNConv layers ('conv1.lin.weight') and a
+# layer named 'edge_proj'. This service uses plain Linear layers
+# ('conv1.weight') and calls the edge layer 'edge_fc'. Remap the names so
+# every trained weight is actually loaded. For an account with no graph
+# edges, GCNConv reduces to lin(x) + bias, so Linear is equivalent here.
+KEY_MAP = {
+    'conv1.lin.weight': 'conv1.weight',
+    'conv2.lin.weight': 'conv2.weight',
+    'edge_proj.weight': 'edge_fc.weight',
+    'edge_proj.bias':   'edge_fc.bias',
+}
+remapped = {KEY_MAP.get(k, k): v for k, v in state.items()}
+
+# strict=True: any future name mismatch fails loudly instead of silently
+# leaving layers at random initialisation.
+model.load_state_dict(remapped, strict=True)
 model.eval()
 print("GNN model loaded")
 
