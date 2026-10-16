@@ -1,4 +1,4 @@
-# cross_bank_simulation_v2.py
+# cross_bank_simulation.py
 #
 # N-BANK federated detection simulation -- extends the original 2-bank
 # proof of concept to handle an arbitrary number of banks, each running
@@ -345,16 +345,16 @@ if __name__ == "__main__":
 
     else:
         print("Usage:")
-        print("  python cross_bank_simulation_v2.py --find-banks [n] [sample_size]")
+        print("  python cross_bank_simulation.py --find-banks [n] [sample_size]")
         print("    Lists top n bank codes (default 10) in that row window")
         print()
-        print("  python cross_bank_simulation_v2.py <sample_size|full> [bank1 bank2 bank3 ...]")
+        print("  python cross_bank_simulation.py <sample_size|full> [bank1 bank2 bank3 ...]")
         print("    Runs N-bank simulation. If no bank codes given, auto-picks top 3.")
         print()
         print("  Examples:")
-        print("    python cross_bank_simulation_v2.py 100000")
+        print("    python cross_bank_simulation.py 100000")
         print("      Auto-picks top 3 banks, runs on first 100K rows")
-        print("    python cross_bank_simulation_v2.py 100000 070 020 011 014")
+        print("    python cross_bank_simulation.py 100000 070 020 011 014")
         print("      Runs with 4 specific banks on first 100K rows")
-        print("    python cross_bank_simulation_v2.py full 070 020")
+        print("    python cross_bank_simulation.py full 070 020")
         print("      Runs 2 specific banks on the FULL 6.9M row dataset")
