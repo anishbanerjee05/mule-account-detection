@@ -4,9 +4,11 @@ param(
     [int]$consumers     = 2
 )
 
-$projectPath = "C:\Users\ASUS\Desktop\mule_detection"
-$venv        = "$projectPath\venv\Scripts\Activate.ps1"
-$venv311     = "$projectPath\venv311\Scripts\Activate.ps1"
+# Project directory is resolved from this script's own location, so the
+# launcher works from any clone location or user account.
+$projectPath = $PSScriptRoot
+$venv        = Join-Path $projectPath "venv\Scripts\Activate.ps1"
+$venv311     = Join-Path $projectPath "venv311\Scripts\Activate.ps1"
 
 function Section($msg) {
     Write-Host ""
@@ -18,19 +20,71 @@ function Abort($msg) {
     exit 1
 }
 
+# Returns the parsed /stats JSON from the GNN service, or $null if unreachable.
+function Get-GnnStats {
+    try {
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:8002/stats" -TimeoutSec 3 -ErrorAction Stop
+        return ($resp.Content | ConvertFrom-Json)
+    } catch {
+        return $null
+    }
+}
+
+# Healthy means the service answers AND the persistent embedding store loaded.
+function Test-GnnReady {
+    $s = Get-GnnStats
+    return (($null -ne $s) -and ($s.persistent_store_loaded -eq $true))
+}
+
 Write-Host ""
 Write-Host "=== Mule Account Detection System - Demo Launcher ===" -ForegroundColor Cyan
 Write-Host "=== CyberPeace Foundation Research Wing            ===" -ForegroundColor Cyan
 Write-Host ""
 
+Set-Location $projectPath
+
+Section "Phase 0/5 - Checking prerequisites"
+
+if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
+    Abort "docker not found. Install and start Docker Desktop (see README)."
+}
+
+$required = @(
+    "ibm_aml_small.csv",
+    "xgb_hybrid_model.pkl",
+    "scaler_hybrid.pkl",
+    "hybrid_model_config.json",
+    "best_gnn_model.pt",
+    "embeddings_store.parquet",
+    "start_gnn.py",
+    "warm_redis_cache.py",
+    "consumer.py",
+    "producer.py",
+    "dashboard_v2_light_theme.py"
+)
+$missing = @()
+foreach ($f in $required) {
+    if (-not (Test-Path (Join-Path $projectPath $f))) { $missing += $f }
+}
+if ($missing.Count -gt 0) {
+    foreach ($f in $missing) { Write-Host "  MISSING: $f" -ForegroundColor Red }
+    Abort "Required files are missing. See README sections 'Datasets' and 'Model artifacts' for how to obtain or regenerate them."
+}
+
+foreach ($v in @($venv, $venv311)) {
+    if (-not (Test-Path $v)) {
+        Abort "Virtual environment not found: $v. Create it as described in the README setup section."
+    }
+}
+Write-Host "  All required files and environments found" -ForegroundColor Green
+
 Section "Phase 1/5 - Verifying Docker containers"
-$containers = @("redis", "kafka", "zookeeper", "postgres")
+$containers = @("redis", "kafka", "zookeeper")
 foreach ($c in $containers) {
     $status = docker inspect --format "{{.State.Status}}" $c 2>$null
     if ($status -ne "running") {
-        Write-Host "  $c not running - attempting docker-compose up..." -ForegroundColor Yellow
-        Set-Location $projectPath
-        docker-compose up -d | Out-Null
+        Write-Host "  $c not running - attempting docker compose up..." -ForegroundColor Yellow
+        docker compose up -d | Out-Null
         Start-Sleep -Seconds 10
         $status = docker inspect --format "{{.State.Status}}" $c 2>$null
         if ($status -ne "running") {
@@ -63,27 +117,26 @@ if (-not $skip_reset) {
         }
     }
 
-    $topicName | Out-File -FilePath "$projectPath\active_topic.txt" -Encoding ASCII -NoNewline
+    $topicName | Out-File -FilePath (Join-Path $projectPath "active_topic.txt") -Encoding ASCII -NoNewline
     Write-Host "  Kafka topic: $topicName" -ForegroundColor Green
     Write-Host "  Partitions: 4, verified empty" -ForegroundColor Green
 
 } else {
     Section "Phase 2/5 - Skipping reset"
-    $topicName = Get-Content "$projectPath\active_topic.txt"
+    $topicFile = Join-Path $projectPath "active_topic.txt"
+    if (-not (Test-Path $topicFile)) {
+        Abort "active_topic.txt not found. Run once without -skip_reset first."
+    }
+    $topicName = Get-Content $topicFile
     Write-Host "  Active topic: $topicName" -ForegroundColor Green
 }
 
 Section "Phase 3/5 - Starting GNN service"
 
-# Check if GNN service is already running and healthy
-$gnnAlreadyRunning = $false
-try {
-    $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:8002/stats" -TimeoutSec 3 -ErrorAction Stop
-    if ($resp.Content -match "persistent_store_loaded") {
-        $gnnAlreadyRunning = $true
-        Write-Host "  GNN service already running and healthy. Skipping startup." -ForegroundColor Green
-    }
-} catch {}
+$gnnAlreadyRunning = Test-GnnReady
+if ($gnnAlreadyRunning) {
+    Write-Host "  GNN service already running and healthy. Skipping startup." -ForegroundColor Green
+}
 
 if (-not $gnnAlreadyRunning) {
     # Kill any existing process on port 8002
@@ -102,29 +155,28 @@ if (-not $gnnAlreadyRunning) {
     $gnnReady = $false
     for ($i = 0; $i -lt 40; $i++) {
         Start-Sleep -Seconds 2
-        try {
-            $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:8002/stats" -TimeoutSec 3 -ErrorAction Stop
-            if ($resp.Content -match "persistent_store_loaded") { $gnnReady = $true; break }
-        } catch {}
+        if (Test-GnnReady) { $gnnReady = $true; break }
         Write-Host "  Loading... $($i*2)s elapsed" -ForegroundColor Gray
     }
-    if (-not $gnnReady) { Abort "GNN service did not become healthy within 80s." }
+    if (-not $gnnReady) {
+        $s = Get-GnnStats
+        if ($null -ne $s) {
+            Abort "GNN service is up but the persistent embedding store did not load. Check embeddings_store.parquet (see README)."
+        }
+        Abort "GNN service did not become healthy within 80s. Check the GNN service window for errors."
+    }
     Write-Host "  GNN service healthy." -ForegroundColor Green
 }
 
 Section "Phase 3b/5 - Warming Redis embedding cache"
-try {
-    $statsContent = (Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:8002/stats" -TimeoutSec 3).Content
-    $statsResp = $statsContent | ConvertFrom-Json
-    $cachedCount = $statsResp.redis_cached_embeddings
-} catch {
-    $cachedCount = 0
-}
+$statsResp = Get-GnnStats
+if ($null -ne $statsResp) { $cachedCount = $statsResp.redis_cached_embeddings } else { $cachedCount = 0 }
 if ($cachedCount -gt 100000) {
     Write-Host "  Redis already warmed with $cachedCount embeddings. Skipping." -ForegroundColor Green
 } else {
-    Write-Host "  Loading 579,735 embeddings into Redis..." -ForegroundColor Gray
+    Write-Host "  Loading embeddings into Redis..." -ForegroundColor Gray
     & powershell -Command "cd '$projectPath'; & '$venv311'; python warm_redis_cache.py"
+    if ($LASTEXITCODE -ne 0) { Abort "warm_redis_cache.py failed (exit code $LASTEXITCODE)." }
     Write-Host "  Redis cache warmed." -ForegroundColor Green
 }
 
