@@ -123,7 +123,7 @@ Close the PowerShell windows opened by the launcher, then `docker compose down`.
 | `xgb_hybrid_model.pkl` | 1.6 MB | Yes | Committed | `consumer.py`, dashboards, `mlops.py` |
 | `scaler_hybrid.pkl` | 2 KB | Yes | Committed | `consumer.py`, dashboards, `mlops.py` |
 | `hybrid_model_config.json` | 1 KB | Yes | Committed | `consumer.py`, dashboards, `mlops.py` |
-| `embeddings_store.parquet` | 69.4 MB | No | [TO FILL BEFORE SUBMISSION: GitHub Release URL] | `gnn_service.py`, `warm_redis_cache.py` |
+| `embeddings_store.parquet` | 69.4 MiB (72,775,892 bytes) | No | https://github.com/anishbanerjee05/mule-account-detection/releases/download/V1.0/embeddings_store.parquet | `gnn_service.py`, `warm_redis_cache.py` |
 | `ibm_aml_small.csv` | 620 MB | No | Kaggle download below | `producer.py`, `consumer.py`, notebooks |
 
 ### The dataset (`ibm_aml_small.csv`)
@@ -146,10 +146,10 @@ Get-FileHash best_gnn_model.pt, xgb_hybrid_model.pkl, scaler_hybrid.pkl, embeddi
 
 | File | SHA-256 |
 |------|---------|
-| `best_gnn_model.pt` | [TO FILL BEFORE SUBMISSION] |
-| `xgb_hybrid_model.pkl` | [TO FILL BEFORE SUBMISSION] |
-| `scaler_hybrid.pkl` | [TO FILL BEFORE SUBMISSION] |
-| `embeddings_store.parquet` | [TO FILL BEFORE SUBMISSION] |
+| `best_gnn_model.pt` | `86D4168E8F0BA427FFAB92275BA49BA5502AF90CD48AE01BF2F0C4C2290204C3` |
+| `xgb_hybrid_model.pkl` | `22CEAABE140E20167B17A71A21D5D1AA70534D680608E125D2A2C576FCE670F2` |
+| `scaler_hybrid.pkl` | `215D956AC24E913EC13459E27AA085977AAEBE092F48F9119600C1B785C36562` |
+| `embeddings_store.parquet` | `1462544E6DD9E21BCF9D6AFDE9B596C14C15B2B56DEF0B89A65579E5241CE22D` |
 
 The model files were saved with `xgboost` 3.2.0, `scikit-learn` 1.9.0, `pandas` 3.0.3 and `numpy` 2.4.x, which `requirements.txt` pins. Different versions may fail to load the pickles or behave differently.
 
