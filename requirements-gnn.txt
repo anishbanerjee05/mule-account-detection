@@ -1,10 +1,24 @@
+# GNN environment (venv311, Python 3.11).
+# Used by: gnn_service.py, start_gnn.py, warm_redis_cache.py,
+#          export_embeddings.py, 04/05 notebooks.
+# The +cu121 build also runs on machines without an NVIDIA GPU; for a
+# smaller CPU-only download use:
+#   pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.5.1+cu121
-torchvision==0.20.1+cu121
-torchaudio==2.5.1+cu121
+
+# Only needed by the notebooks and provisional_embedding.py, not by gnn_service.py
 torch-geometric==2.8.0
+
+# GNN microservice
 fastapi==0.137.1
 uvicorn==0.49.0
 redis==8.0.0
-pandas==3.0.3
 requests==2.34.2
+numpy==2.4.4
+pandas==3.0.3
+pyarrow==24.0.0
+
+# 05_GNN.ipynb trains and saves the hybrid XGBoost model
+scikit-learn==1.9.0
+xgboost==3.2.0

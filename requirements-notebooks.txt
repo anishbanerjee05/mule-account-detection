@@ -1,0 +1,12 @@
+# Extra packages needed to run the notebooks (01_EDA ... 05_GNN).
+# Install ON TOP of a runtime environment, not instead of it:
+#   Notebooks 01, 02, 02b, 03, 03b  ->  venv:    requirements.txt, then this file
+#   Notebooks 04, 05 (GNN, GPU)     ->  venv311: requirements-gnn.txt, then this file
+jupyterlab==4.5.8
+ipykernel==7.3.0
+matplotlib==3.10.9
+seaborn==0.13.2
+scipy==1.17.1
+imbalanced-learn==0.14.2
+networkx==3.6.1
+shap==0.52.0
