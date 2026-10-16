@@ -69,12 +69,12 @@ foreach ($f in $required) {
 }
 if ($missing.Count -gt 0) {
     foreach ($f in $missing) { Write-Host "  MISSING: $f" -ForegroundColor Red }
-    Abort "Required files are missing. See README sections 'Datasets' and 'Model artifacts' for how to obtain or regenerate them."
+    Abort "Required files are missing. See README Section 2 (Data and model artifacts) for how to obtain or regenerate them."
 }
 
 foreach ($v in @($venv, $venv311)) {
     if (-not (Test-Path $v)) {
-        Abort "Virtual environment not found: $v. Create it as described in the README setup section."
+        Abort "Virtual environment not found: $v. Create it as described in README Section 1 (step 2)."
     }
 }
 Write-Host "  All required files and environments found" -ForegroundColor Green
@@ -128,7 +128,6 @@ if (-not $skip_reset) {
 
     $timestamp = Get-Date -Format "yyyyMMddHHmmss"
     $topicName = "transactions-raw-$timestamp"
-       docker exec kafka kafka-topics --create --topic $topicName --bootstrap-server localhost:9092 --partitions 4 --replication-factor 1 | Out-Null
     if ($LASTEXITCODE -ne 0) { Abort "Kafka topic creation failed for $topicName (exit code $LASTEXITCODE)." }
     Start-Sleep -Seconds 2
 

@@ -5,7 +5,7 @@ venv311/
 __pycache__/
 .ipynb_checkpoints/
 
-# --- Datasets (never commit; see README "Datasets") ---
+# --- Datasets (never commit; see README Section 2) ---
 paysim.csv/
 *.csv
 

@@ -7,7 +7,7 @@
 --extra-index-url https://download.pytorch.org/whl/cu121
 torch==2.5.1+cu121
 
-# Only needed by the notebooks and provisional_embedding.py, not by gnn_service.py
+# Needed by the notebooks and export_embeddings.py, not by gnn_service.py
 torch-geometric==2.8.0
 
 # GNN microservice
