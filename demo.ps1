@@ -1,14 +1,14 @@
 param(
-    [switch]$producers  = $false,
+    [switch]$producers = $false,
     [switch]$skip_reset = $false,
-    [int]$consumers     = 2
+    [int]$consumers = 2
 )
 
 # Project directory is resolved from this script's own location, so the
 # launcher works from any clone location or user account.
 $projectPath = $PSScriptRoot
-$venv        = Join-Path $projectPath "venv\Scripts\Activate.ps1"
-$venv311     = Join-Path $projectPath "venv311\Scripts\Activate.ps1"
+$venv = Join-Path $projectPath "venv\Scripts\Activate.ps1"
+$venv311 = Join-Path $projectPath "venv311\Scripts\Activate.ps1"
 
 function Section($msg) {
     Write-Host ""
@@ -25,7 +25,8 @@ function Get-GnnStats {
     try {
         $resp = Invoke-WebRequest -UseBasicParsing -Uri "http://localhost:8002/stats" -TimeoutSec 3 -ErrorAction Stop
         return ($resp.Content | ConvertFrom-Json)
-    } catch {
+    }
+    catch {
         return $null
     }
 }
@@ -94,6 +95,28 @@ foreach ($c in $containers) {
     Write-Host "  $c : running" -ForegroundColor Green
 }
 
+# "running" only means the container process exists. Kafka needs several
+# more seconds before the broker accepts connections, so wait for it.
+Write-Host "  Waiting for Kafka broker to accept connections..." -ForegroundColor Gray
+$kafkaReady = $false
+for ($i = 0; $i -lt 30; $i++) {
+    # Kafka can crash at startup if ZooKeeper still holds the previous
+    # broker's registration (NodeExists). Restart it until that expires.
+    $running = docker inspect -f '{{.State.Running}}' kafka 2>$null
+    if ($running -ne 'true') {
+        Write-Host "  kafka not running, starting it (attempt $($i + 1))..." -ForegroundColor Yellow
+        docker start kafka *> $null
+        Start-Sleep -Seconds 5
+    }
+    docker exec kafka kafka-broker-api-versions --bootstrap-server localhost:9092 *> $null
+    if ($LASTEXITCODE -eq 0) { $kafkaReady = $true; break }
+    Start-Sleep -Seconds 3
+}
+if (-not $kafkaReady) {
+    Abort "Kafka broker did not become ready within 90s. Run: docker logs kafka --tail 30"
+}
+Write-Host "  kafka broker : ready" -ForegroundColor Green
+
 if (-not $skip_reset) {
     Section "Phase 2/5 - Resetting environment"
 
@@ -105,23 +128,25 @@ if (-not $skip_reset) {
 
     $timestamp = Get-Date -Format "yyyyMMddHHmmss"
     $topicName = "transactions-raw-$timestamp"
-    docker exec kafka kafka-topics --create --topic $topicName --bootstrap-server localhost:9092 --partitions 4 --replication-factor 1 | Out-Null
+       docker exec kafka kafka-topics --create --topic $topicName --bootstrap-server localhost:9092 --partitions 4 --replication-factor 1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { Abort "Kafka topic creation failed for $topicName (exit code $LASTEXITCODE)." }
     Start-Sleep -Seconds 2
 
+    # Verify the topic exists with exactly 4 partitions, each at offset 0.
     $offsetCheck = docker exec kafka kafka-run-class kafka.tools.GetOffsetShell --broker-list localhost:9092 --topic $topicName
-    $lines = $offsetCheck -split "`n"
+    if ($LASTEXITCODE -ne 0) { Abort "Could not read offsets for $topicName (exit code $LASTEXITCODE)." }
+    $lines = @($offsetCheck -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" })
+    if ($lines.Count -ne 4) { Abort "Expected 4 partitions for $topicName, found $($lines.Count)." }
     foreach ($line in $lines) {
-        $line = $line.Trim()
-        if ($line -ne "" -and $line -notmatch ":0$") {
-            Abort "Partition not empty: $line"
-        }
+        if ($line -notmatch ":0$") { Abort "Partition not empty: $line" }
     }
 
     $topicName | Out-File -FilePath (Join-Path $projectPath "active_topic.txt") -Encoding ASCII -NoNewline
     Write-Host "  Kafka topic: $topicName" -ForegroundColor Green
     Write-Host "  Partitions: 4, verified empty" -ForegroundColor Green
 
-} else {
+}
+else {
     Section "Phase 2/5 - Skipping reset"
     $topicFile = Join-Path $projectPath "active_topic.txt"
     if (-not (Test-Path $topicFile)) {
@@ -173,7 +198,8 @@ $statsResp = Get-GnnStats
 if ($null -ne $statsResp) { $cachedCount = $statsResp.redis_cached_embeddings } else { $cachedCount = 0 }
 if ($cachedCount -gt 100000) {
     Write-Host "  Redis already warmed with $cachedCount embeddings. Skipping." -ForegroundColor Green
-} else {
+}
+else {
     Write-Host "  Loading embeddings into Redis..." -ForegroundColor Gray
     & powershell -Command "cd '$projectPath'; & '$venv311'; python warm_redis_cache.py"
     if ($LASTEXITCODE -ne 0) { Abort "warm_redis_cache.py failed (exit code $LASTEXITCODE)." }
