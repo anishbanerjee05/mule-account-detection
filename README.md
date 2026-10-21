@@ -71,7 +71,13 @@ To run the notebooks, additionally install `requirements-notebooks.txt` on top o
 
 **3. Obtain the dataset** (not in the repository: 620 MB). See [Section 2](#2-data-and-model-artifacts). Place it in the repository root as `ibm_aml_small.csv`.
 
-**4. Obtain the embedding store** (69.4 MB, distributed as a release asset). See [Section 2](#2-data-and-model-artifacts). Place `embeddings_store.parquet` in the repository root.
+**4. Obtain the embedding store** (69.4 MiB, distributed as a release asset). Download it into the repository root:
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/anishbanerjee05/mule-account-detection/releases/download/V1.0/embeddings_store.parquet" -OutFile embeddings_store.parquet
+```
+
+The tag is case-sensitive (`V1.0`). Check the file against the SHA-256 table in [Section 2](#2-data-and-model-artifacts).
 
 The three model files (`best_gnn_model.pt`, `xgb_hybrid_model.pkl`, `scaler_hybrid.pkl`) and `hybrid_model_config.json` are committed to this repository, so no action is needed for them.
 
@@ -376,7 +382,7 @@ As reported by the validator for these patterns: 6.53% precision overall, 8.7x l
 
 ### Throughput
 
-Throughput has not been stabilized. Measured values on the development machine (16.8 GB RAM, Docker stack running) fall in a range of **25 to 90 transactions per second** depending on configuration. Earlier figures of several hundred TPS cited in project material were not reproduced and should not be relied on. A throughput regression after adding the CEP engine is unresolved (a revert to `SIMPLE_CYCLE` measured 35 TPS). The batched GNN lookup removed the per-transaction HTTP cost that capped the original consumer at about 27 TPS; the remaining bottleneck is under investigation.
+Throughput has not been stabilized. Measured values on the development machine (16.8 GB RAM, Docker stack running) fall in a range of **25 to 90 transactions per second** depending on configuration. Earlier figures of several hundred TPS cited in project material were not reproduced and should not be relied on. A throughput regression after adding the CEP engine is unresolved (a revert to `SIMPLE_CYCLE` measured 35 TPS). The batched GNN lookup removed the per-transaction HTTP cost that capped the original consumer at about 27 TPS; the remaining bottleneck is under investigation. In the fresh-clone run of 2026-10-21 the two consumers together scored 42.8 TPS over one 60-second window while the producer wrote at roughly 170 messages per second, so consumer lag grows for as long as the producer runs.
 
 ---
 
@@ -463,19 +469,32 @@ The validators additionally need `duckdb` and `polars`, which are not in the req
 
 ## 11. Validation status
 
-Fresh-clone end-to-end run: **[TO FILL BEFORE SUBMISSION: date, machine, outcome]**
+Fresh-clone end-to-end run: **2026-10-21; Windows (build 10.0.26200), Windows PowerShell 5.1, Python 3.14.4 and 3.11, Docker Desktop; repository commit `bd58db6`. Outcome: completed, with the caveats listed below.**
 
 | Check | Result |
 |-------|--------|
-| Clean clone into an empty folder | [TO FILL] |
-| Both environments installed from the requirements files | [TO FILL] |
-| Dataset and embedding store placed per Section 2 | [TO FILL] |
-| `demo.ps1 -producers` completed all phases | [TO FILL] |
-| Transactions scored and alerts visible on the dashboard | [TO FILL] |
-| Errors encountered and how they were resolved | [TO FILL] |
+| Clean clone into an empty folder | Passed. Cloned from GitHub and updated to `bd58db6`. |
+| Both environments installed from the requirements files | Passed. Import checks succeeded in both (`venv`; `venv311` with torch 2.5.1+cu121). The pip output was not captured in the run transcript. |
+| Embedding store placed per Section 2 | Passed. Downloaded from the Release URL; the SHA-256 of all four artifacts matched the table in Section 2. |
+| Dataset placed per Section 2 | Not re-validated. `ibm_aml_small.csv` was copied from an earlier Kaggle download, so the Kaggle steps in Section 2 were not re-run in this test. |
+| `demo.ps1 -producers` completed all phases | Passed on the fourth attempt (earlier attempts stopped at Phase 0, 1 and 2; see below). Kafka topic created with 4 empty partitions; GNN service healthy; Redis warmed; 2 consumers, dashboard and producer started. |
+| Transactions scored | Passed. `/stats` reported `persistent_store_loaded: true` with 579,735 embeddings; the consumer group `mule-detector-prod` consumed 1,400 messages in the first minutes and 2,570 in a 60-second window (42.8 TPS with 2 consumers) while the producer had written 52,319. Consumer lag grew (Section 7). |
+| Alerts visible on the dashboard | Not verified in this run. The dashboard process was started in Phase 5; its pages were not inspected. |
+
+### Errors encountered and how they were resolved
+
+1. **Environments without packages.** Environments existed but the packages were not installed after an interrupted install. Resolved by running the `pip install` commands in Section 1 to completion.
+2. **`ibm_aml_small.csv` missing.** Phase 0 of `demo.ps1` stopped and named the file (expected behaviour). Resolved by placing the file in the repository root.
+3. **Docker not running.** Phase 1 stopped with a message to start Docker Desktop (expected behaviour).
+4. **Kafka crash after a Docker restart.** Kafka exited at startup with `NodeExists` because ZooKeeper still held the previous broker registration. `demo.ps1` now waits for the broker and restarts it if it is not running. The crash was reproduced by killing and restarting the broker; the recovery path of the fixed launcher was not re-run end to end.
+5. **Kafka topic never created.** The topic-creation command was missing from `demo.ps1`, so the offset check failed. Fixed in commit `bd58db6` (create with retries); the following run passed.
+6. **Cosmetic.** On a first run PowerShell prints a red `docker : error: no such object: redis` before the launcher starts the containers, and the closing banner lists "Start producer" hints even with `-producers`. Neither affects the result.
+
+### Not covered by this run
+
+The recovery path in item 4, the Kaggle download steps, the dashboard pages (unless stated in the table), and flagged-account output were not exercised here.
 
 ---
-
 ## 12. Background
 
 ### Datasets
