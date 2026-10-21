@@ -34,7 +34,7 @@ A machine learning system for detecting money mule accounts in financial transac
 | Docker Desktop (running) | Provides Kafka, Zookeeper and Redis. The Live Monitoring dashboard page also calls `docker exec`. |
 | Python 3.14 | Environment `venv`: consumer, producer, dashboard, optional APIs. |
 | Python 3.11 | Environment `venv311`: GNN service and notebooks 04-05. |
-| About 16 GB RAM | The development machine had 16.8 GB, of which only about 6 GB was free with Docker running. The GNN service therefore runs 2 workers, each loading the full embedding store (579,735 vectors) into memory. `consumer.py` also reads the whole 620 MB dataset CSV at startup to build its label set. |
+| About 16 GB RAM | The development machine had 16.8 GB, of which only about 6 GB was free with Docker running. Each GNN worker process loads the full embedding store (579,735 vectors) into memory. The launcher `start_gnn.py` (used by `demo.ps1`) runs one worker; running `python gnn_service.py` directly starts two. `consumer.py` also reads the whole 620 MB dataset CSV at startup to build its label set. |
 | About 3 GB free disk | Excluding the PyTorch download. |
 | NVIDIA GPU (optional) | Only needed to retrain the GNN. Serving and scoring run on CPU. |
 
@@ -136,7 +136,7 @@ Close the PowerShell windows opened by the launcher, then `docker compose down`.
 
 Source: the IBM "Transactions for Anti Money Laundering (AML)" dataset on Kaggle: https://www.kaggle.com/datasets/ealtman2019/ibm-transactions-for-anti-money-laundering-aml
 
-1. Download the dataset and take the **LI-Small** transactions file (`LI-Small_Trans.csv`). The pipeline was built on the file with 6,924,049 transactions. [Verify against your download: the file has 6,924,049 data rows plus a header.]
+1. Download the dataset and take the **LI-Small** transactions file (`LI-Small_Trans.csv`). The pipeline was built on the file with 6,924,049 transactions. A copy of this file was counted for this README: 6,924,050 lines, i.e. 6,924,049 data rows plus the header. The file name on Kaggle was not re-checked against the live page; if it differs, take the LI-Small transactions file.
 2. Rename it to `ibm_aml_small.csv` and place it in the repository root.
 3. No other preparation is needed for the streaming pipeline. The producer reads these columns: `Account`, `Account.1`, `From Bank`, `To Bank`, `Amount Paid`, `Amount Received`, `Payment Currency`, `Receiving Currency`, `Payment Format`, `Is Laundering`. It streams only the payment formats ACH, Cheque, Credit Card, Cash and Bitcoin.
 
@@ -170,8 +170,8 @@ Retraining is not needed to run the system, and a retrained model may score slig
 | 1 | Download the dataset as above | n/a | `ibm_aml_small.csv` |
 | 2 | `02b_IBM_EDA.ipynb` | `venv` | `ibm_feature_matrix.csv` (git-ignored) |
 | 3 | `04_graph_construction.ipynb` | `venv311` | The transaction graph used by notebook 05 |
-| 4 | `05_GNN.ipynb` (needs Docker/Redis running; GPU recommended) | `venv311` | `best_gnn_model.pt`, `graph_data.pkl`, embeddings in Redis, then the hybrid model files `xgb_hybrid_model.pkl`, `scaler_hybrid.pkl`, `hybrid_model_config.json` |
-| 5 | `export_embeddings.py` | `venv311` | `embeddings_store.parquet` [verify: inputs of this script] |
+| 4 | `05_GNN.ipynb` (needs Docker/Redis running; GPU recommended) | `venv311` | `best_gnn_model.pt`, `graph_data.pkl`, `graph_data_full.pkl` (the input of step 5), embeddings in Redis, then the hybrid model files `xgb_hybrid_model.pkl`, `scaler_hybrid.pkl`, `hybrid_model_config.json` |
+| 5 | `export_embeddings.py` | `venv311` | `embeddings_store.parquet` (reads `best_gnn_model.pt` and `graph_data_full.pkl` from step 4) |
 
 Notebooks 01, 02 and 03 are the PaySim-based exploration and baseline models (`model_config.json`). They are not needed by the pipeline.
 
@@ -249,7 +249,7 @@ docker exec kafka kafka-topics --create --topic $t --bootstrap-server localhost:
 .\venv311\Scripts\python.exe start_gnn.py
 ```
 
-Wait for `"persistent_store_loaded": true` at http://localhost:8002/stats. Memory note: run it with 2 workers or fewer on a 16 GB machine.
+Wait for `"persistent_store_loaded": true` at http://localhost:8002/stats. Memory note: `start_gnn.py` runs one worker. `python gnn_service.py` run directly starts two; on a 16 GB machine do not go above two.
 
 **Warm the Redis cache**
 
@@ -443,7 +443,7 @@ The validators additionally need `duckdb` and `polars`, which are not in the req
 | `ABORT: Required files are missing` | The listed files are not in the repository root. See Section 2 (dataset and embedding store). |
 | `ConnectionError ... localhost:6379` when starting the GNN service | Redis is not running. Start Docker Desktop, then `docker compose up -d`. |
 | GNN service starts but `persistent_store_loaded` is `false` | `embeddings_store.parquet` is missing or empty. Place the file in the repository root and restart the service. |
-| GNN service restarts repeatedly | Memory pressure or slow startup. Use 2 workers or fewer and close other applications. |
+| GNN service restarts repeatedly | Memory pressure or slow startup. Start it with `start_gnn.py` (one worker) rather than `python gnn_service.py` (two), and close other applications. |
 | `FileNotFoundError: xgb_hybrid_model.pkl` | You are not running from the repository root. |
 | Pickle loading errors or warnings | Library versions differ from the pinned ones. Reinstall from `requirements.txt` in a clean environment. |
 | `Could not load IBM AML labels` in the consumer | `ibm_aml_small.csv` is missing. The consumer still runs but cannot mark confirmed laundering accounts. |
