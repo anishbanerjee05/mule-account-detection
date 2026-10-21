@@ -128,7 +128,13 @@ if (-not $skip_reset) {
 
     $timestamp = Get-Date -Format "yyyyMMddHHmmss"
     $topicName = "transactions-raw-$timestamp"
-    if ($LASTEXITCODE -ne 0) { Abort "Kafka topic creation failed for $topicName (exit code $LASTEXITCODE)." }
+    $created = $false
+    for ($i = 0; $i -lt 10; $i++) {
+        docker exec kafka kafka-topics --create --if-not-exists --topic $topicName --bootstrap-server localhost:9092 --partitions 4 --replication-factor 1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $created = $true; break }
+        Start-Sleep -Seconds 3
+    }
+    if (-not $created) { Abort "Kafka topic creation failed for $topicName after 10 attempts (exit code $LASTEXITCODE)." }
     Start-Sleep -Seconds 2
 
     # Verify the topic exists with exactly 4 partitions, each at offset 0.
